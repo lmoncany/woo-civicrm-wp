@@ -1,0 +1,75 @@
+.wc-civicrm-settings {
+      max-width: 800px;
+      margin: 20px auto;
+    }
+    .connection-status {
+      padding: 5px 10px;
+      border-radius: 3px;
+      color: white;
+    }
+    .connected { background-color: #46b450; }
+    .not-connected { background-color: #dc3232; }
+    .log-status {
+      padding: 3px 6px;
+      border-radius: 3px;
+      color: white;
+    }
+    .log-status.success { background-color: #46b450; }
+    .log-status.error { background-color: #dc3232; }
+    .button-danger { 
+      background-color: #dc3232; 
+      border-color: #dc3232; 
+      color: white; 
+    }
+    .button-danger:hover { 
+      background-color: #a00; 
+      border-color: #a00; 
+    }
+
+    /* Logs page styles */
+    .wp-list-table details {
+      margin: 10px 0;
+    }
+
+    .wp-list-table details summary {
+      cursor: pointer;
+      color: #2271b1;
+      padding: 5px 0;
+    }
+
+    .wp-list-table details summary:hover {
+      color: #135e96;
+    }
+
+    .wp-list-table details pre {
+      background: #f6f7f7;
+      padding: 10px;
+      border-radius: 4px;
+      margin-top: 5px;
+      overflow-x: auto;
+      max-width: 100%;
+      white-space: pre-wrap;
+    }
+
+    .tablenav-pages {
+      float: right;
+      margin: 10px 0;
+    }
+
+    .tablenav-pages .page-numbers {
+      padding: 3px 8px;
+      border: 1px solid #ddd;
+      margin: 0 2px;
+      text-decoration: none;
+      border-radius: 3px;
+    }
+
+    .tablenav-pages .page-numbers.current {
+      background: #2271b1;
+      color: white;
+      border-color: #2271b1;
+    }
+
+    .alignleft.actions {
+      margin: 10px 0;
+    }

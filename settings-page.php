@@ -57,7 +57,7 @@ class WC_CiviCRM_Settings {
                 'checkPermissions' => false
             ]);
             
-            if (!empty($contact_fields)) {
+            if (!empty($contact_fields['values'])) {
                 $this->available_fields['Contact'] = array_map(function($field) {
                     if (!is_array($field) || empty($field['name'])) {
                         return null;
@@ -65,12 +65,13 @@ class WC_CiviCRM_Settings {
                     return [
                         'name' => $field['name'] ?? '',
                         'label' => $field['label'] ?? $field['name'],
-                        'type' => $field['data_type'] ?? 'String'
+                        'type' => 'Contact'
                     ];
-                }, $contact_fields);
+                }, $contact_fields['values']);
                 $this->available_fields['Contact'] = array_filter($this->available_fields['Contact']);
             }
 
+           
             // Fetch Contribution fields
             $contribution_fields = $this->send_civicrm_request('Contribution', 'getFields', [
                 'select' => ['name', 'label', 'data_type'],
@@ -78,7 +79,7 @@ class WC_CiviCRM_Settings {
                 'checkPermissions' => false
             ]);
             
-            if (!empty($contribution_fields)) {
+            if (!empty($contribution_fields['values'])) {
                 $this->available_fields['Contribution'] = array_map(function($field) {
                     if (!is_array($field) || empty($field['name'])) {
                         return null;
@@ -86,9 +87,9 @@ class WC_CiviCRM_Settings {
                     return [
                         'name' => $field['name'] ?? '',
                         'label' => $field['label'] ?? $field['name'],
-                        'type' => $field['data_type'] ?? 'String'
+                        'type' => 'Contribution'
                     ];
-                }, $contribution_fields);
+                }, $contribution_fields['values']);
                 $this->available_fields['Contribution'] = array_filter($this->available_fields['Contribution']);
             }
 
@@ -117,7 +118,9 @@ class WC_CiviCRM_Settings {
     public function register_settings() {
         register_setting('wc_civicrm_settings', 'wc_civicrm_url');
         register_setting('wc_civicrm_settings', 'wc_civicrm_auth_token');
-        register_setting('wc_civicrm_settings', 'wc_civicrm_field_mappings');
+        register_setting('wc_civicrm_settings', 'wc_civicrm_field_mappings', [
+            'sanitize_callback' => [$this, 'sanitize_field_mappings']
+        ]);
         register_setting('wc_civicrm_settings', 'wc_civicrm_debug_mode');
 
         // Connection Settings Section
@@ -187,6 +190,26 @@ class WC_CiviCRM_Settings {
             'wc-civicrm-settings',
             'wc_civicrm_mappings'
         );
+    }
+
+    public function sanitize_field_mappings($mappings) {
+        if (!is_array($mappings)) {
+            return [];
+        }
+
+        $sanitized = [];
+        foreach ($mappings as $key => $mapping) {
+            if (empty($mapping['wc_field']) || empty($mapping['civicrm'])) {
+                continue;
+            }
+
+            $sanitized[$mapping['wc_field']] = [
+                'civicrm' => sanitize_text_field($mapping['civicrm']),
+                'type' => sanitize_text_field($mapping['type'])
+            ];
+        }
+
+        return $sanitized;
     }
 
     public function section_callback() {
@@ -259,26 +282,6 @@ class WC_CiviCRM_Settings {
                 
                 button.prop('disabled', true).text('Fetching...');
                 result.html('');
-                    } else {
-                        result.html('<span class="error">✗ ' + response.data + '</span>');
-                        $('#fetch-fields').prop('disabled', true);
-                    }
-                })
-                .fail(function() {
-                    result.html('<span class="error">✗ Connection failed</span>');
-                    $('#fetch-fields').prop('disabled', true);
-                })
-                .always(function() {
-                    button.prop('disabled', false).text('Test Connection');
-                });
-            });
-
-            $('#fetch-fields').click(function() {
-                var button = $(this);
-                var result = $('#connection-result');
-                
-                button.prop('disabled', true).text('Fetching...');
-                result.html('');
                 
                 $.post(ajaxurl, {
                     action: 'fetch_civicrm_fields',
@@ -288,6 +291,7 @@ class WC_CiviCRM_Settings {
                     if (response.success) {
                         result.html('<span class="success">✓ Fields fetched successfully</span>');
                         updateFieldOptions(response.data);
+                        console.log(response)
                     } else {
                         result.html('<span class="error">✗ ' + response.data + '</span>');
                     }
@@ -300,7 +304,7 @@ class WC_CiviCRM_Settings {
                 });
             });
 
-            function updateFieldOptions(fields) {
+            function updateFieldOptions(response) {
                 $('.civicrm-field-select').each(function() {
                     var select = $(this);
                     var currentValue = select.val();
@@ -309,36 +313,53 @@ class WC_CiviCRM_Settings {
                     select.empty();
                     select.append('<option value="">Select CiviCRM Field</option>');
                     
-                    // Group fields by type
-                    var fieldsByType = {};
-                    fields.forEach(function(field) {
-                        if (!fieldsByType[field.type]) {
-                            fieldsByType[field.type] = [];
-                        }
-                        fieldsByType[field.type].push(field);
-                    });
-                    
-                    // Sort field types alphabetically
-                    Object.keys(fieldsByType).sort().forEach(function(type) {
-                        var group = $('<optgroup></optgroup>')
-                            .attr('label', type + ' Fields');
+                    // Create Contact Fields group
+                    if (response.contact_fields && response.contact_fields.length > 0) {
+                        var contactGroup = $('<optgroup></optgroup>').attr('label', 'Contact Fields');
                         
-                        // Sort fields within each group by title
-                        fieldsByType[type].sort((a, b) => a.title.localeCompare(b.title))
+                        // Sort Contact fields by label
+                        response.contact_fields
+                            .sort((a, b) => (a.label || '').localeCompare(b.label || ''))
                             .forEach(function(field) {
-                                var option = $('<option></option>')
-                                    .attr('value', field.name)
-                                    .attr('data-type', field.type)
-                                    .text(field.title + ' (' + field.name + ')');
-                                if (field.name === currentValue) {
-                                    option.prop('selected', true);
-                                    typeCell.text(field.type);
+                                if (field.name && field.label) {
+                                    var option = $('<option></option>')
+                                        .attr('value', field.name)
+                                        .attr('data-type', 'Contact')
+                                        .text(field.label + ' (' + field.name + ')');
+                                    if (field.name === currentValue) {
+                                        option.prop('selected', true);
+                                        typeCell.text('Contact');
+                                    }
+                                    contactGroup.append(option);
                                 }
-                                group.append(option);
                             });
                         
-                        select.append(group);
-                    });
+                        select.append(contactGroup);
+                    }
+                    
+                    // Create Contribution Fields group
+                    if (response.contribution_fields && response.contribution_fields.length > 0) {
+                        var contributionGroup = $('<optgroup></optgroup>').attr('label', 'Contribution Fields');
+                        
+                        // Sort Contribution fields by label
+                        response.contribution_fields
+                            .sort((a, b) => (a.label || '').localeCompare(b.label || ''))
+                            .forEach(function(field) {
+                                if (field.name && field.label) {
+                                    var option = $('<option></option>')
+                                        .attr('value', field.name)
+                                        .attr('data-type', 'Contribution')
+                                        .text(field.label + ' (' + field.name + ')');
+                                    if (field.name === currentValue) {
+                                        option.prop('selected', true);
+                                        typeCell.text('Contribution');
+                                    }
+                                    contributionGroup.append(option);
+                                }
+                            });
+                        
+                        select.append(contributionGroup);
+                    }
                 });
 
                 // Add change handler for field type display and storage
@@ -406,6 +427,8 @@ class WC_CiviCRM_Settings {
         $mappings = get_option('wc_civicrm_field_mappings', []);
         $wc_fields = $this->get_woocommerce_fields();
         ?>
+        <form method="post" action="options.php">
+        <?php settings_fields('wc_civicrm_settings'); ?>
         <div id="field-mappings-container">
           <div class="field-mappings-container">
             <div class="field-mappings-header">
@@ -424,12 +447,12 @@ class WC_CiviCRM_Settings {
               </thead>
               <tbody>
                 <?php foreach ($mappings as $wc_field => $mapping): 
-                    $civicrm_field = is_array($mapping) ? $mapping['field'] : $mapping;
+                    $civicrm_field = is_array($mapping) ? $mapping['civicrm'] : $mapping;
                     $field_type = is_array($mapping) ? $mapping['type'] : '';
                 ?>
                 <tr>
                   <td>
-                    <select name="wc_civicrm_field_mappings[<?php echo esc_attr($wc_field); ?>][wc]" class="regular-text">
+                    <select name="wc_civicrm_field_mappings[<?php echo esc_attr($wc_field); ?>][wc_field]" class="regular-text">
                       <option value="">Select WooCommerce Field</option>
                       <?php foreach ($wc_fields as $field => $label): ?>
                         <option value="<?php echo esc_attr($field); ?>" <?php selected($field, $wc_field); ?>>
@@ -501,6 +524,8 @@ class WC_CiviCRM_Settings {
             </style>
           </div>
         </div>
+        <?php submit_button('Save Mappings'); ?>
+        </form>
         <script>
             jQuery(document).ready(function($) {
                 function getNewRow() {
@@ -514,7 +539,7 @@ class WC_CiviCRM_Settings {
                     return `
                         <tr>
                             <td>
-                                <select name="wc_civicrm_field_mappings[${rowId}][wc]" class="regular-text">
+                                <select name="wc_civicrm_field_mappings[${rowId}][wc_field]" class="regular-text">
                                     ${options}
                                 </select>
                             </td>
@@ -583,61 +608,6 @@ class WC_CiviCRM_Settings {
             'payment_method' => 'Payment Method',
             'order_notes' => 'Order Notes'
         ];
-    }
-
-    public function ajax_fetch_fields() {
-        check_ajax_referer('fetch_civicrm_fields');
-        
-        try {
-            // Set credentials
-            $this->civicrm_url = get_option('wc_civicrm_url');
-            $this->auth_token = get_option('wc_civicrm_auth_token');
-            
-            // Fetch Contact fields using API4 format
-            $contact_fields = $this->send_civicrm_request('Contact', 'getFields', [
-                'select' => ['name', 'label', 'data_type'],
-                'where' => [],
-                'checkPermissions' => false
-            ]);
-            
-            // Fetch Contribution fields using API4 format
-            $contribution_fields = $this->send_civicrm_request('Contribution', 'getFields', [
-                'select' => ['name', 'label', 'data_type'],
-                'where' => [],
-                'checkPermissions' => false
-            ]);
-            
-            $fields = [];
-            
-            // Process fields from API4 response
-            if (!empty($contact_fields)) {
-                foreach ($contact_fields as $field) {
-                    if (!empty($field['name']) && !empty($field['label'])) {
-                        $fields[] = [
-                            'name' => $field['name'],
-                            'title' => $field['label'],
-                            'type' => 'Contact'
-                        ];
-                    }
-                }
-            }
-            
-            if (!empty($contribution_fields)) {
-                foreach ($contribution_fields as $field) {
-                    if (!empty($field['name']) && !empty($field['label'])) {
-                        $fields[] = [
-                            'name' => $field['name'],
-                            'title' => $field['label'],
-                            'type' => 'Contribution'
-                        ];
-                    }
-                }
-            }
-            
-            wp_send_json_success($fields);
-        } catch (Exception $e) {
-            wp_send_json_error($e->getMessage());
-        }
     }
 }
 

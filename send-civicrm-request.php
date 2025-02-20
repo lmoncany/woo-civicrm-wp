@@ -3,8 +3,10 @@ if (!defined('WPINC')) {
     die;
 }
 
-trait WC_CiviCRM_API_Request {
-    private function log_api_request($entity, $action, $params) {
+trait WC_CiviCRM_API_Request
+{
+    private function log_api_request($entity, $action, $params)
+    {
         if (class_exists('WC_CiviCRM_Logger')) {
             WC_CiviCRM_Logger::log_success('api_request', [
                 'message' => 'Sending CiviCRM API request',
@@ -15,7 +17,8 @@ trait WC_CiviCRM_API_Request {
         }
     }
 
-    private function log_api_response($endpoint, $status, $result) {
+    private function log_api_response($endpoint, $status, $result)
+    {
         if (class_exists('WC_CiviCRM_Logger')) {
             WC_CiviCRM_Logger::log_success('api_response', [
                 'message' => 'Received API response',
@@ -27,7 +30,8 @@ trait WC_CiviCRM_API_Request {
         }
     }
 
-    private function log_api_error($endpoint, $entity, $action, $error) {
+    private function log_api_error($endpoint, $entity, $action, $error)
+    {
         if (class_exists('WC_CiviCRM_Logger')) {
             WC_CiviCRM_Logger::log_error('api_error', [
                 'message' => 'API request failed',
@@ -46,27 +50,38 @@ trait WC_CiviCRM_API_Request {
         if (empty($entity) || empty($action)) {
             throw new Exception('Entity and action are required');
         }
-    
+
         // Prepare the endpoint
         $endpoint = $params['_endpoint'] ?? $this->get_api_endpoint($entity, $action);
-    
+
         // Prepare request parameters
-        $request_data = [
-            'params' => json_encode([
-                'values' => $params['values'] ?? [],
-                'checkPermissions' => $params['checkPermissions'] ?? false
-            ])
-        ];
-    
-        // Remove any additional metadata keys that might interfere with the request
-        if (isset($request_data['params'])) {
-            $params_array = json_decode($request_data['params'], true);
-            $params_array['values'] = array_filter($params_array['values'], function($key) {
-                return !str_contains($key, ':');
-            }, ARRAY_FILTER_USE_KEY);
-            $request_data['params'] = json_encode($params_array);
+        // For 'get' actions, pass parameters directly
+        if ($action === 'get') {
+            $request_data = [
+                'params' => json_encode($params)
+            ];
+        } else {
+            // For other actions, use values key
+            $request_data = [
+                'params' => json_encode([
+                    'values' => $params['values'] ?? [],
+                    'checkPermissions' => $params['checkPermissions'] ?? false
+                ])
+            ];
+
+            if (isset($request_data['params'])) {
+                $params_array = json_decode($request_data['params'], true);
+                $params_array['values'] = array_filter($params_array['values'], function ($key) {
+                    return !str_contains($key, ':');
+                }, ARRAY_FILTER_USE_KEY);
+                $request_data['params'] = json_encode($params_array);
+            }
         }
-    
+
+
+        // Remove any additional metadata keys that might interfere with the request
+        
+
         // Prepare headers
         $headers = [
             'Content-Type: application/x-www-form-urlencoded',
@@ -74,7 +89,7 @@ trait WC_CiviCRM_API_Request {
             'X-Requested-With: XMLHttpRequest',
             'Accept: application/json'
         ];
-    
+
         // Prepare request context
         $request_context = stream_context_create([
             'http' => [
@@ -83,7 +98,7 @@ trait WC_CiviCRM_API_Request {
                 'content' => http_build_query($request_data)
             ]
         ]);
-    
+
         // Log request details for debugging
         error_log('CiviCRM API Request Details:');
         error_log('Endpoint: ' . $endpoint);
@@ -91,26 +106,26 @@ trait WC_CiviCRM_API_Request {
         error_log('Action: ' . $action);
         error_log('Params: ' . json_encode($request_data, JSON_PRETTY_PRINT));
         error_log('Auth Token: ' . substr($this->auth_token, 0, 5) . '...' . substr($this->auth_token, -5));
-    
+
         // Execute the request
         try {
             $response_raw = @file_get_contents($endpoint, false, $request_context);
-            
+
             if ($response_raw === false) {
                 throw new Exception('Failed to connect to CiviCRM API');
             }
-    
+
             $response = json_decode($response_raw, true);
-    
+
             // Log HTTP status and raw response
             error_log('HTTP Status: ' . (isset($http_response_header[0]) ? $http_response_header[0] : 'Unknown'));
             error_log('Raw Response: ' . $response_raw);
-    
+
             // Check for API errors
             if (isset($response['status']) && $response['status'] == 500) {
                 throw new Exception($response['error_message'] ?? 'Unknown API error');
             }
-    
+
             return $response;
         } catch (Exception $e) {
             // Log any exceptions
@@ -118,5 +133,4 @@ trait WC_CiviCRM_API_Request {
             throw $e;
         }
     }
-    
 }

@@ -108,6 +108,7 @@ add_action('plugins_loaded', function () {
     }
 });
 
+
 class WooCommerceCiviCRMIntegration
 {
     use WC_CiviCRM_API_Request {
@@ -117,6 +118,19 @@ class WooCommerceCiviCRMIntegration
     private $civicrm_url;
     private $auth_token;
     private $field_mappings;
+
+
+
+    private function is_civicrm_configured()
+    {
+        return !empty($this->civicrm_url) && !empty($this->auth_token);
+    }
+
+    public function get_api_endpoint($entity, $action)
+    {
+        // Construct the CiviCRM API4 endpoint based on the entity and action
+        return rtrim($this->civicrm_url, '/') . '/civicrm/ajax/api4/' . $entity . '/' . $action;
+    }
 
     private function load_settings()
     {
@@ -141,6 +155,8 @@ class WooCommerceCiviCRMIntegration
         add_action('admin_notices', [$this, 'show_admin_notices']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_assets']);
         add_action('wp_ajax_test_civicrm_connection', [$this, 'ajax_test_connection']);
+
+        require_once plugin_dir_path(__FILE__) . 'send-civicrm-request.php';
     }
 
     public function handle_status_change($order_id, $old_status, $new_status, $order)
@@ -229,80 +245,123 @@ class WooCommerceCiviCRMIntegration
             if (empty($this->civicrm_url) || empty($this->auth_token)) {
                 WC_CiviCRM_Logger::log_error('order_processing', [
                     'message' => 'CiviCRM settings not configured',
-                    'order_id' => $order_id,
-                    'settings' => [
-                        'has_url' => !empty($this->civicrm_url),
-                        'has_token' => !empty($this->auth_token),
-                        'has_mappings' => !empty($this->field_mappings)
-                    ]
+                    'order_id' => $order_id
                 ]);
                 return;
             }
 
-            WC_CiviCRM_Logger::log_success('order_processing', [
-                'message' => 'Starting order processing',
-                'order_id' => $order_id,
-                'hook' => current_filter(),
-                'settings' => [
-                    'has_url' => !empty($this->civicrm_url),
-                    'has_token' => !empty($this->auth_token),
-                    'has_mappings' => !empty($this->field_mappings)
-                ]
-            ]);
-
+            // Get the WooCommerce order
             $order = wc_get_order($order_id);
             if (!$order) {
-                throw new Exception('Order not found: ' . $order_id);
+                WC_CiviCRM_Logger::log_error('order_sync', [
+                    'message' => 'Order not found',
+                    'order_id' => $order_id
+                ]);
+                return;
             }
 
-            WC_CiviCRM_Logger::log_success('order_processing', [
-                'message' => 'Extracting order data',
-                'order_id' => $order_id
-            ]);
+            // Check if this order has already been synced to CiviCRM
+            $civicrm_contribution_id = $order->get_meta('civicrm_contribution_id');
+            if (!empty($civicrm_contribution_id)) {
+                WC_CiviCRM_Logger::log_success('order_already_synced', [
+                    'message' => 'Order already synced to CiviCRM',
+                    'order_id' => $order_id,
+                    'contribution_id' => $civicrm_contribution_id
+                ]);
+                return;
+            }
 
-            $order_data = $this->extract_order_data($order);
+            // Extract order data for contact creation
+            $order_data = [
+                'billing_email' => $order->get_billing_email(),
+                'billing_first_name' => $order->get_billing_first_name(),
+                'billing_last_name' => $order->get_billing_last_name(),
+                'billing_company' => $order->get_billing_company(),
+                'billing_phone' => $order->get_billing_phone(),
+                'billing_address_1' => $order->get_billing_address_1(),
+                'billing_address_2' => $order->get_billing_address_2(),
+                'billing_city' => $order->get_billing_city(),
+                'billing_postcode' => $order->get_billing_postcode(),
+                'billing_country' => $order->get_billing_country()
+            ];
 
-            WC_CiviCRM_Logger::log_success('order_processing', [
-                'message' => 'Creating/updating contact',
-                'order_id' => $order_id,
-                'order_data' => $order_data
-            ]);
-
-            // First create/update contact
+            // Get or create contact
             $contact_id = $this->get_or_create_contact($order_data);
 
-            WC_CiviCRM_Logger::log_success('order_processing', [
-                'message' => 'Contact created/updated successfully',
-                'order_id' => $order_id,
-                'contact_id' => $contact_id
-            ]);
-
-            // Then create the order
-            WC_CiviCRM_Logger::log_success('order_processing', [
-                'message' => 'Creating CiviCRM contribution',
-                'order_id' => $order_id,
-                'contact_id' => $contact_id
-            ]);
-
-            $civi_order = $this->create_civicrm_order($contact_id, $order_data);
-
-            WC_CiviCRM_Logger::log_success('order_completed', [
-                'message' => 'Order processed successfully',
-                'wc_order_id' => $order_id,
-                'civicrm_contribution_id' => $civi_order['id'],
+            // Prepare contribution data
+            $contribution_data = [
                 'contact_id' => $contact_id,
-                'status' => 'completed'
+                'financial_type_id' => 1, // Donation (default financial type)
+                'total_amount' => $order->get_total(),
+                'currency' => $order->get_currency(),
+                'contribution_status_id' => 1, // Completed
+                'payment_instrument_id' => $this->map_payment_method($order->get_payment_method()),
+                'source' => 'WooCommerce Order #' . $order_id,
+                'receive_date' => date('Y-m-d H:i:s')
+            ];
+
+            // Prepare endpoints
+            $contribution_endpoint = rtrim($this->civicrm_url, '/') . '/civicrm/ajax/api4/Contribution/create';
+
+            // Create contribution
+            $contribution_fields = [
+                'values' => $contribution_data,
+                'checkPermissions' => false,
+                '_endpoint' => $contribution_endpoint
+            ];
+
+            $contribution_response = $this->send_civicrm_request('Contribution', 'create', $contribution_fields);
+
+            // Validate contribution creation
+            if (empty($contribution_response['values']) || empty($contribution_response['values'][0]['id'])) {
+                throw new Exception('Failed to create contribution: No ID returned');
+            }
+
+            // Store CiviCRM contribution ID in WooCommerce order meta
+            $order->update_meta_data('civicrm_contribution_id', $contribution_response['values'][0]['id']);
+            $order->save();
+
+            // Log successful sync
+            WC_CiviCRM_Logger::log_success('order_sync', [
+                'message' => 'Order synced to CiviCRM',
+                'order_id' => $order_id,
+                'contact_id' => $contact_id,
+                'contribution_id' => $contribution_response['values'][0]['id']
             ]);
         } catch (Exception $e) {
-            WC_CiviCRM_Logger::log_error('order_failed', [
-                'message' => 'Order processing failed',
+            // Log any errors
+            WC_CiviCRM_Logger::log_error('order_sync', [
+                'message' => 'Order sync failed',
                 'order_id' => $order_id,
-                'error' => $e->getMessage(),
-                'data' => isset($order_data) ? $order_data : null,
-                'trace' => $e->getTraceAsString()
+                'error' => $e->getMessage()
             ]);
-            throw $e; // Re-throw to let WordPress handle it
+
+            // Add error to WordPress admin notices
+            add_action('admin_notices', function () use ($e) {
+                printf(
+                    '<div class="notice notice-error"><p>%s</p></div>',
+                    esc_html(sprintf(
+                        __('CiviCRM Order Sync Error: %s', 'wc-civicrm'),
+                        $e->getMessage()
+                    ))
+                );
+            });
         }
+    }
+
+    // Helper method to map WooCommerce payment methods to CiviCRM payment instruments
+    private function map_payment_method($wc_payment_method)
+    {
+        // Default to 1 (Credit Card) if no mapping is found
+        $payment_method_map = [
+            'stripe' => 1,  // Credit Card
+            'paypal' => 2,  // Check (adjust based on your CiviCRM configuration)
+            'bacs' => 4,    // Bank Transfer
+            'cod' => 5,     // Cash
+            // Add more mappings as needed
+        ];
+
+        return $payment_method_map[$wc_payment_method] ?? 1;
     }
 
     private function extract_order_data($order)
@@ -347,6 +406,8 @@ class WooCommerceCiviCRMIntegration
             'order_id' => $order->get_id()
         ];
 
+
+
         // Filter out empty values
         return array_filter($data, function ($value) {
             return !empty($value) || $value === 0 || $value === '0';
@@ -387,179 +448,151 @@ class WooCommerceCiviCRMIntegration
         return $response[0];
     }
 
-    private function get_or_create_contact($order_data) {
-        try {
-            // Debug: Log initial order data
-            WC_CiviCRM_Logger::log_success('contact_process_start', [
-                'message' => 'Starting contact creation/update process',
-                'order_data' => $order_data,
-                'field_mappings' => $this->field_mappings
+    private function get_or_create_contact($order_data)
+    {
+        if (!$this->is_civicrm_configured()) {
+            WC_CiviCRM_Logger::log_error('civicrm_not_configured', [
+                'message' => 'CiviCRM settings are not fully configured',
+                'order_data' => $order_data
             ]);
-    
+            throw new Exception('CiviCRM integration is not properly configured');
+        }
+
+        error_log('message order data: ' . json_encode($order_data));
+
+        try {
             // Validate required order data
             $required_order_fields = ['billing_email', 'billing_first_name', 'billing_last_name'];
-            $missing_fields = [];
-            foreach ($required_order_fields as $field) {
-                if (empty($order_data[$field])) {
-                    $missing_fields[] = $field;
-                }
-            }
-    
+            $missing_fields = array_filter($required_order_fields, function ($field) use ($order_data) {
+                return empty($order_data[$field]);
+            });
+
             if (!empty($missing_fields)) {
-                WC_CiviCRM_Logger::log_error('missing_required_fields', [
-                    'message' => 'Missing required order fields',
-                    'missing_fields' => $missing_fields,
-                    'order_data' => $order_data
-                ]);
                 throw new Exception('Missing required fields: ' . implode(', ', $missing_fields));
             }
-    
-            // Map WooCommerce fields to CiviCRM fields
-            $contact_data = [];
-            foreach ($this->field_mappings as $wc_field => $mapping) {
-                $civicrm_field = is_array($mapping) ? $mapping['field'] : $mapping;
-                $field_type = is_array($mapping) ? $mapping['type'] : '';
-    
-                if (isset($order_data[$wc_field]) && $field_type === 'Contact') {
-                    $contact_data[$civicrm_field] = $order_data[$wc_field];
-                }
-            }
-    
-            // Debug: Log mapped contact data
-            WC_CiviCRM_Logger::log_success('contact_data_mapping', [
-                'message' => 'Contact data after mapping',
-                'contact_data' => $contact_data,
-                'mapping_rules' => $this->field_mappings
-            ]);
-    
+
             // Determine contact type
             $contact_type = !empty($order_data['billing_company']) ? 'Organization' : 'Individual';
-    
-            // Add required fields if not mapped
-            $contact_data = array_merge([
+
+            // Prepare contact data
+            $contact_data = [
                 'contact_type' => $contact_type,
-                'email' => $order_data['billing_email'],
-                'first_name' => $order_data['billing_first_name'] ?? '',
-                'last_name' => $order_data['billing_last_name'] ?? ''
-            ], $contact_data);
-    
-            // Search for existing contact
-            $search_params = [
-                'select' => ['id', 'contact_type', 'email'],
+                'first_name' => $order_data['billing_first_name'],
+                'last_name' => $order_data['billing_last_name']
+            ];
+
+
+            // Search for existing contact by email first
+            $email_search_params = [
+                'select' => ['id', 'contact_type', 'first_name', 'last_name'],
                 'where' => [
                     ['email', '=', $order_data['billing_email']]
                 ],
                 'limit' => 1,
                 'checkPermissions' => false
             ];
-    
-            // Debug: Log search attempt
-            WC_CiviCRM_Logger::log_success('contact_search', [
-                'message' => 'Searching for existing contact',
-                'search_params' => $search_params,
-                'email' => $order_data['billing_email']
-            ]);
-    
-            $response = $this->send_civicrm_request('Contact', 'get', $search_params);
-    
-            // Debug: Log search results
-            WC_CiviCRM_Logger::log_success('contact_search_result', [
-                'message' => 'Contact search completed',
-                'response' => $response,
-                'found' => !empty($response)
-            ]);
-    
-            if (!empty($response)) {
-                $contact_id = $response[0]['id'];
-    
-                // Prepare update data
-                $update_params = [
-                    'where' => [['id', '=', $contact_id]],
-                    'values' => $contact_data,
-                    'checkPermissions' => false
-                ];
-    
-                // Debug: Log update attempt
-                WC_CiviCRM_Logger::log_success('contact_update', [
-                    'message' => 'Updating existing contact',
-                    'contact_id' => $contact_id,
-                    'update_params' => $update_params
+
+            $existing_contacts_by_email = $this->send_civicrm_request('Email', 'get', $email_search_params);
+
+            // If contact found by email, return or update
+            if (!empty($existing_contacts_by_email['values'])) {
+                $existing_contact = $existing_contacts_by_email['values'][0];
+
+                // Log found contact details
+                WC_CiviCRM_Logger::log_success('contact_found_by_email', [
+                    'message' => 'Existing contact located by email',
+                    'contact_id' => $existing_contact['id'],
+                    'existing_name' => ($existing_contact['first_name'] ?? '') . ' ' . ($existing_contact['last_name'] ?? '')
                 ]);
-    
-                // Update existing contact
-                $update_response = $this->send_civicrm_request('Contact', 'update', $update_params);
-    
-                // Debug: Log update response
-                WC_CiviCRM_Logger::log_success('contact_update_result', [
-                    'message' => 'Contact update completed',
-                    'contact_id' => $contact_id,
-                    'response' => $update_response
-                ]);
-    
-                return $contact_id;
+
+                return $existing_contact['contact_id'];
             }
-    
-            // Prepare creation data
-            $create_params = [
-                'values' => $contact_data,
+
+            // If no contact found by email, search by name
+            $name_search_params = [
+                'select' => ['id', 'contact_type', 'first_name', 'last_name'],
+                'where' => [
+                    ['first_name', '=', $order_data['billing_first_name']],
+                    ['last_name', '=', $order_data['billing_last_name']]
+                ],
+                'limit' => 1,
                 'checkPermissions' => false
             ];
-    
-            // Debug: Log creation attempt
-            WC_CiviCRM_Logger::log_success('contact_creation', [
-                'message' => 'Creating new contact',
-                'create_params' => $create_params
-            ]);
-    
+
+            $existing_contacts_by_name = $this->send_civicrm_request('Contact', 'get', $name_search_params);
+
+            // If contact found by name, return or update
+            if (!empty($existing_contacts_by_name['values'])) {
+                $existing_contact = $existing_contacts_by_name['values'][0];
+
+                // Log found contact details
+                WC_CiviCRM_Logger::log_success('contact_found_by_name', [
+                    'message' => 'Existing contact located by name',
+                    'contact_id' => $existing_contact['id'],
+                    'existing_name' => ($existing_contact['first_name'] ?? '') . ' ' . ($existing_contact['last_name'] ?? '')
+                ]);
+
+                return $existing_contact['id'];
+            }
+
+            // Prepare create parameters with more comprehensive data
+            $create_params = [
+                'values' => array_merge($contact_data, [
+                    'email' => [
+                        'email' => $order_data['billing_email'],
+                        'is_primary' => 1,
+                        'location_type_id' => 1 // Typically 'Home' location type
+                    ],
+                    // Add additional contact details if available
+                    'phone' => !empty($order_data['billing_phone']) ? [
+                        'phone' => $order_data['billing_phone'],
+                        'is_primary' => 1,
+                        'phone_type_id' => 1 // Typically 'Phone' type
+                    ] : null,
+                    'address' => [
+                        'street_address' => $order_data['billing_address_1'] ?? '',
+                        'supplemental_address_1' => $order_data['billing_address_2'] ?? '',
+                        'city' => $order_data['billing_city'] ?? '',
+                        'postal_code' => $order_data['billing_postcode'] ?? '',
+                        'is_primary' => 1,
+                        'location_type_id' => 1 // Typically 'Home' location type
+                    ]
+                ]),
+                'checkPermissions' => false
+            ];
+
+            // Remove null values
+            $create_params['values'] = array_filter($create_params['values']);
+
             // Create new contact
             $create_response = $this->send_civicrm_request('Contact', 'create', $create_params);
-    
+
             // Validate creation response
-            if (empty($create_response) || empty($create_response[0]['id'])) {
-                WC_CiviCRM_Logger::log_error('contact_creation_failed', [
-                    'message' => 'Contact creation failed - no ID returned',
-                    'response' => $create_response,
-                    'params' => $create_params
-                ]);
+            if (empty($create_response['values']) || empty($create_response['values'][0]['id'])) {
                 throw new Exception('Failed to create contact: No ID returned');
             }
-    
-            // Debug: Log creation success
-            WC_CiviCRM_Logger::log_success('contact_creation_success', [
-                'message' => 'New contact created successfully',
-                'contact_id' => $create_response[0]['id'],
-                'response' => $create_response
+
+            // Log new contact creation with more details
+            WC_CiviCRM_Logger::log_success('contact_creation', [
+                'message' => 'New contact created',
+                'contact_id' => $create_response['values'][0]['id'],
+                'email' => $order_data['billing_email'],
+                'name' => $order_data['billing_first_name'] . ' ' . $order_data['billing_last_name']
             ]);
-    
-            return $create_response[0]['id'];
-    
+
+            return $create_response['values'][0]['id'];
         } catch (Exception $e) {
-            // Log detailed error information
-            WC_CiviCRM_Logger::log_error('contact_error', [
-                'message' => 'Contact creation/update failed',
+            // Comprehensive error logging
+            WC_CiviCRM_Logger::log_error('contact_process_error', [
+                'message' => 'Contact processing failed',
                 'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-                'order_data' => $order_data,
-                'contact_data' => $contact_data ?? null,
-                'last_api_response' => isset($create_response) ? $create_response : 
-                                     (isset($update_response) ? $update_response : 
-                                     (isset($response) ? $response : null))
+                'order_data' => $order_data
             ]);
-    
-            // Add error to WordPress admin notices
-            add_action('admin_notices', function() use ($e) {
-                $class = 'notice notice-error';
-                $message = sprintf(
-                    __('CiviCRM Contact Creation Error: %s', 'wc-civicrm'),
-                    $e->getMessage()
-                );
-                printf('<div class="%1$s"><p>%2$s</p></div>', esc_attr($class), esc_html($message));
-            });
-    
-            throw new Exception('Failed to get or create contact: ' . $e->getMessage());
+
+            throw $e;
         }
     }
-    
+
 
     public function add_admin_pages()
     {

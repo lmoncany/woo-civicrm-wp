@@ -40,81 +40,83 @@ trait WC_CiviCRM_API_Request {
         }
     }
 
-    private function send_civicrm_request($entity, $action, $params) {
+    public function send_civicrm_request($entity, $action, $params = [])
+    {
+        // Validate required parameters
+        if (empty($entity) || empty($action)) {
+            throw new Exception('Entity and action are required');
+        }
+    
+        // Prepare the endpoint
+        $endpoint = $params['_endpoint'] ?? $this->get_api_endpoint($entity, $action);
+    
+        // Prepare request parameters
+        $request_data = [
+            'params' => json_encode([
+                'values' => $params['values'] ?? [],
+                'checkPermissions' => $params['checkPermissions'] ?? false
+            ])
+        ];
+    
+        // Remove any additional metadata keys that might interfere with the request
+        if (isset($request_data['params'])) {
+            $params_array = json_decode($request_data['params'], true);
+            $params_array['values'] = array_filter($params_array['values'], function($key) {
+                return !str_contains($key, ':');
+            }, ARRAY_FILTER_USE_KEY);
+            $request_data['params'] = json_encode($params_array);
+        }
+    
+        // Prepare headers
+        $headers = [
+            'Content-Type: application/x-www-form-urlencoded',
+            'X-Civi-Auth: Bearer ' . $this->auth_token,
+            'X-Requested-With: XMLHttpRequest',
+            'Accept: application/json'
+        ];
+    
+        // Prepare request context
+        $request_context = stream_context_create([
+            'http' => [
+                'method' => 'POST',
+                'header' => $headers,
+                'content' => http_build_query($request_data)
+            ]
+        ]);
+    
+        // Log request details for debugging
+        error_log('CiviCRM API Request Details:');
+        error_log('Endpoint: ' . $endpoint);
+        error_log('Entity: ' . $entity);
+        error_log('Action: ' . $action);
+        error_log('Params: ' . json_encode($request_data, JSON_PRETTY_PRINT));
+        error_log('Auth Token: ' . substr($this->auth_token, 0, 5) . '...' . substr($this->auth_token, -5));
+    
+        // Execute the request
         try {
-            // Use exact API4 endpoint
-            $endpoint = 'https://testwpcivi.appli.in/civicrm/ajax/api4/' . $entity . '/' . $action;
-
-            // Format request for API4
-            $request_data = ['checkPermissions' => false];
-
-            if ($action === 'getFields') {
-                // For getFields action, we don't need select/where
-                $request_data = array_merge($request_data, [
-                    'loadOptions' => true,
-                    'includeCustom' => true
-                ], $params);
-            } else if ($action === 'get') {
-                $request_data = array_merge($request_data, [
-                    'select' => isset($params['select']) ? $params['select'] : ['*'],
-                    'where' => isset($params['where']) ? $params['where'] : []
-                ]);
-            } else if ($action === 'create' || $action === 'update') {
-                $request_data = array_merge($request_data, [
-                    'values' => $params['values'] ?? []
-                ]);
-            }
-
-            // Log API request
-            $this->log_api_request($entity, $action, $request_data);
-
-            // Create stream context with API4 headers
-            $context = stream_context_create([
-                'http' => [
-                    'method' => 'POST',
-                    'header' => [
-                        'Content-Type: application/json',
-                        'X-Civi-Auth: Bearer ' . $this->auth_token,
-                        'Accept: application/json'
-                    ],
-                    'content' => json_encode($request_data)
-                ]
-            ]);
-
-            // Make the API request
-            $response = file_get_contents($endpoint, false, $context);
-            if ($response === false) {
+            $response_raw = @file_get_contents($endpoint, false, $request_context);
+            
+            if ($response_raw === false) {
                 throw new Exception('Failed to connect to CiviCRM API');
             }
-
-            $result = json_decode($response, true);
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                throw new Exception('Invalid JSON response: ' . json_last_error_msg());
+    
+            $response = json_decode($response_raw, true);
+    
+            // Log HTTP status and raw response
+            error_log('HTTP Status: ' . (isset($http_response_header[0]) ? $http_response_header[0] : 'Unknown'));
+            error_log('Raw Response: ' . $response_raw);
+    
+            // Check for API errors
+            if (isset($response['status']) && $response['status'] == 500) {
+                throw new Exception($response['error_message'] ?? 'Unknown API error');
             }
-
-            // Get response headers to check status
-            $status = 200; // Default to 200 if headers not available
-            if (isset($http_response_header)) {
-                foreach ($http_response_header as $header) {
-                    if (preg_match('/^HTTP\/\d\.\d\s+(\d+)/', $header, $matches)) {
-                        $status = intval($matches[1]);
-                        break;
-                    }
-                }
-            }
-
-            // Log API response
-            $this->log_api_response($endpoint, $status, $result);
-
-            if (!empty($result['error'])) {
-                throw new Exception($result['error']['message'] ?? 'Unknown API error');
-            }
-
-            return $result;
+    
+            return $response;
         } catch (Exception $e) {
-            // Log API error
-            $this->log_api_error($endpoint ?? '', $entity, $action, $e);
+            // Log any exceptions
+            error_log('CiviCRM API Request Error: ' . $e->getMessage());
             throw $e;
         }
     }
+    
 }

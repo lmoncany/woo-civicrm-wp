@@ -5,6 +5,114 @@ if (!defined('WPINC')) {
 
 trait WC_CiviCRM_API_Request
 {
+    /**
+     * Test connection to CiviCRM API
+     * 
+     * This function performs a simple API call to test if the CiviCRM connection is working.
+     * Returns an array with status, message, and any additional debug information.
+     * 
+     * @return array Connection status and details
+     */
+    public function test_civicrm_connection()
+    {
+        try {
+            // Make sure we have the required credentials
+            if (empty($this->civicrm_url)) {
+                return [
+                    'success' => false,
+                    'status' => 'disconnected',
+                    'message' => 'CiviCRM URL is not configured'
+                ];
+            }
+
+            if (empty($this->auth_token)) {
+                return [
+                    'success' => false,
+                    'status' => 'disconnected',
+                    'message' => 'CiviCRM API Token is not configured'
+                ];
+            }
+
+            // Create a simple endpoint for the Contact.get API call
+            $endpoint = rtrim($this->civicrm_url, '/') . '/civicrm/ajax/api4/Contact/get';
+
+            // Set up headers
+            $headers = [
+                'Content-Type: application/x-www-form-urlencoded',
+                'X-Civi-Auth: Bearer ' . $this->auth_token,
+                'X-Requested-With: XMLHttpRequest',
+                'Accept: application/json'
+            ];
+
+            // Create minimal request params
+            $request_data = [
+                'params' => json_encode([
+                    'select' => ['id'],
+                    'limit' => 1,
+                    'checkPermissions' => false
+                ])
+            ];
+
+            // Set context for the API request
+            $context = stream_context_create([
+                'http' => [
+                    'method' => 'POST',
+                    'header' => $headers,
+                    'content' => http_build_query($request_data),
+                    'timeout' => 15 // Shorter timeout for connection test
+                ]
+            ]);
+
+            // Try to make the request
+            $response_raw = @file_get_contents($endpoint, false, $context);
+
+            // If request failed
+            if ($response_raw === false) {
+                $error = error_get_last();
+                return [
+                    'success' => false,
+                    'status' => 'disconnected',
+                    'message' => 'Could not connect to CiviCRM API: ' . ($error['message'] ?? 'Unknown error'),
+                    'http_error' => $http_response_header ?? []
+                ];
+            }
+
+            // Parse the response
+            $response = json_decode($response_raw, true);
+
+            // Check if valid response format
+            if (!is_array($response) || !isset($response['values'])) {
+                return [
+                    'success' => false,
+                    'status' => 'disconnected',
+                    'message' => 'Invalid response from CiviCRM API',
+                    'response' => $response_raw
+                ];
+            }
+
+            // Connection successful
+            return [
+                'success' => true,
+                'status' => 'connected',
+                'message' => 'Successfully connected to CiviCRM API',
+                'data' => [
+                    'contactCount' => count($response['values']),
+                    'civicrm_version' => $response['civi_api_version'] ?? 'Unknown'
+                ]
+            ];
+        } catch (Exception $e) {
+            return [
+                'success' => false,
+                'status' => 'disconnected',
+                'message' => 'Error connecting to CiviCRM: ' . $e->getMessage(),
+                'exception' => [
+                    'code' => $e->getCode(),
+                    'trace' => $e->getTraceAsString()
+                ]
+            ];
+        }
+    }
+
     private function log_api_request($entity, $action, $params)
     {
         if (class_exists('WC_CiviCRM_Logger')) {

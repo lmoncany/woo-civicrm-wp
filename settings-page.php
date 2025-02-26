@@ -10,6 +10,58 @@ if (!defined('ABSPATH')) {
         h1 { color: #d63638; }
         .diagnostic { background: #f0f0f1; padding: 15px; border-left: 4px solid #d63638; margin-bottom: 20px; }
         code { background: #e0e0e0; padding: 2px 4px; }
+        /* Connection status indicator */
+        .connection-indicator { 
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 5px;
+            box-shadow: 0 0 3px rgba(0,0,0,0.3);
+        }
+        .connection-indicator.connected { 
+            background: #52c41a;
+            box-shadow: 0 0 8px #52c41a;
+        }
+        .connection-indicator.disconnected { 
+            background: #ff4d4f;
+            box-shadow: 0 0 8px #ff4d4f;
+        }
+        .connection-indicator.connecting {
+            background: #faad14;
+            box-shadow: 0 0 8px #faad14;
+            animation: pulse 1.5s infinite;
+        }
+        .connection-indicator.unknown {
+            background: #bfbfbf;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 0.6; }
+            50% { opacity: 1; }
+            100% { opacity: 0.6; }
+        }
+        
+        .connection-status {
+            font-weight: 500;
+            margin-bottom: 15px;
+            padding: 8px 12px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            width: fit-content;
+            background: #f9f9f9;
+            border: 1px solid #e8e8e8;
+        }
+        
+        .connection-status-text {
+            font-weight: 600;
+        }
+        
+        /* Ensure form elements are visible */
+        input, select, button { 
+            opacity: 1 !important;
+        }
     </style></head><body>
     <h1>Direct Access Not Allowed</h1>
     <div class="diagnostic">
@@ -203,12 +255,30 @@ class WC_CiviCRM_Settings
         ini_set('display_errors', 1);
         error_reporting(E_ALL);
         
-        // Get current connection status for initial display
-        $connection_status = $this->check_connection_status();
-        $status_class = $connection_status['status'];
-        $status_text = ucfirst($connection_status['status']);
-        if ($status_class === 'unknown') {
-            $status_text = 'Unknown';
+        // Set credentials for connection test
+        $this->civicrm_url = get_option('wc_civicrm_url');
+        $this->auth_token = get_option('wc_civicrm_auth_token');
+        
+        // Auto-test connection on page load if credentials exist
+        if (!empty($this->civicrm_url) && !empty($this->auth_token)) {
+            $connection_test = $this->test_civicrm_connection();
+            $status_class = $connection_test['status'];
+            $status_text = $connection_test['success'] ? 'Connected' : 'Disconnected';
+            
+            // Store the result for future reference
+            update_option('wc_civicrm_connection_status', [
+                'status' => $status_class,
+                'last_checked' => time(),
+                'message' => $connection_test['message']
+            ]);
+        } else {
+            // Get current connection status if we can't test now
+            $connection_status = $this->check_connection_status();
+            $status_class = $connection_status['status'];
+            $status_text = ucfirst($connection_status['status']);
+            if ($status_class === 'unknown') {
+                $status_text = 'Unknown';
+            }
         }
         
         // Minimal critical CSS for tabs to work
@@ -243,24 +313,6 @@ class WC_CiviCRM_Settings
             /* Force first tab to be visible by default */
             #tab-connection { 
                 display: block;
-            }
-            /* Connection status indicator */
-            .connection-indicator { 
-                display: inline-block;
-                width: 12px;
-                height: 12px;
-                border-radius: 50%;
-                margin-right: 5px;
-            }
-            .connection-indicator.connected { 
-                background: #52c41a;
-            }
-            .connection-indicator.disconnected { 
-                background: #ff4d4f;
-            }
-            /* Ensure form elements are visible */
-            input, select, button { 
-                opacity: 1 !important;
             }
         </style>
         
@@ -310,6 +362,19 @@ class WC_CiviCRM_Settings
                                 <tr>
                                     <th scope="row">API Authentication Token</th>
                                     <td><?php $this->auth_token_callback(); ?></td>
+                                </tr>
+                                <tr>
+                                    <th scope="row">Connection Test</th>
+                                    <td>
+                                        <div class="connection-test-container">
+                                            <button id="test-civicrm-connection-main" class="button button-primary">
+                                                <span class="dashicons dashicons-database-view"></span>
+                                                <?php _e('Test CiviCRM Connection', 'woo-civicrm-wp'); ?>
+                                            </button>
+                                            <div id="connection-test-result-main" class="test-result"></div>
+                                        </div>
+                                        <p class="description">Test your CiviCRM connection settings before saving.</p>
+                                    </td>
                                 </tr>
                             </table>
                         </div>
@@ -654,19 +719,33 @@ class WC_CiviCRM_Settings
                 }
                 
                 // Check initial connection status (if known)
-                var initialStatus = <?php echo json_encode($this->check_connection_status()); ?>;
-                if (initialStatus.status === 'connected') {
-                    updateConnectionStatus('connected', 'Connected');
-                } else if (initialStatus.status === 'disconnected') {
-                    updateConnectionStatus('disconnected', 'Disconnected');
-                } else {
-                    updateConnectionStatus('unknown', 'Unknown');
-                }
+                var initialStatus = <?php echo json_encode([
+                    'status' => $status_class ?? 'unknown',
+                    'status_text' => $status_text ?? 'Unknown'
+                ]); ?>;
+                
+                // Update indicator with our server-side test result
+                updateConnectionStatus(initialStatus.status, initialStatus.status_text);
                 
                 // Test connection handling
-                $('#test-civicrm-connection').on('click', function() {
+                $('#test-civicrm-connection, #test-civicrm-connection-main').on('click', function() {
                     var button = $(this);
-                    var resultDiv = $('#connection-test-result');
+                    var resultDiv = button.attr('id') === 'test-civicrm-connection' ? 
+                                    $('#connection-test-result') : 
+                                    $('#connection-test-result-main');
+                    
+                    // Get current URL and token values from form fields (in case they've been modified)
+                    var url = $('input[name="wc_civicrm_url"]').val();
+                    var token = $('input[name="wc_civicrm_auth_token"]').val();
+                    
+                    // Basic validation
+                    if (!url || !token) {
+                        resultDiv.addClass('error').html(
+                            '<span class="dashicons dashicons-warning"></span> ' + 
+                            'Please enter both CiviCRM URL and Authentication Token'
+                        );
+                        return;
+                    }
                     
                     // Set status to connecting/testing
                     updateConnectionStatus('connecting', 'Testing connection...');
@@ -679,7 +758,9 @@ class WC_CiviCRM_Settings
                         type: 'POST',
                         data: {
                             action: 'test_civicrm_connection',
-                            nonce: wc_civicrm_admin_params.test_connection_nonce
+                            nonce: wc_civicrm_admin_params.test_connection_nonce,
+                            url: url,  // Send current field values
+                            token: token
                         },
                         success: function(response) {
                             button.removeClass('updating-message').prop('disabled', false);
@@ -767,6 +848,16 @@ class WC_CiviCRM_Settings
                     button.addClass('updating-message').prop('disabled', true);
                     resultSpan.html('<span class="spinner is-active"></span> Fetching fields...');
                     
+                    // First ensure we have a valid connection
+                    var url = $('input[name="wc_civicrm_url"]').val();
+                    var token = $('input[name="wc_civicrm_auth_token"]').val();
+                    
+                    if (!url || !token) {
+                        resultSpan.html('<span class="dashicons dashicons-warning error"></span> Please enter CiviCRM URL and API token first');
+                        button.removeClass('updating-message').prop('disabled', false);
+                        return;
+                    }
+                    
                     $.ajax({
                         url: ajaxurl,
                         type: 'POST',
@@ -776,6 +867,8 @@ class WC_CiviCRM_Settings
                         },
                         success: function(response) {
                             button.removeClass('updating-message').prop('disabled', false);
+                            
+                            console.log('Field fetch response:', response);
                             
                             if (response.success) {
                                 resultSpan.html('<span class="dashicons dashicons-yes-alt success"></span> Fields fetched successfully');
@@ -791,9 +884,11 @@ class WC_CiviCRM_Settings
                                 resultSpan.html('');
                             }, 5000);
                         },
-                        error: function() {
+                        error: function(xhr, status, error) {
                             button.removeClass('updating-message').prop('disabled', false);
-                            resultSpan.html('<span class="dashicons dashicons-warning error"></span> Network error');
+                            console.error('Field fetch error:', xhr, status, error);
+                            
+                            resultSpan.html('<span class="dashicons dashicons-warning error"></span> Network error: ' + error);
                             
                             // Hide message after 5 seconds
                             setTimeout(function() {
@@ -804,8 +899,15 @@ class WC_CiviCRM_Settings
                 });
                 
                 function updateFieldSelects(fields) {
+                    console.log('Updating field selects with data:', fields);
+                    
                     const contactFields = fields.contact_fields || [];
                     const contributionFields = fields.contribution_fields || [];
+                    
+                    if (contactFields.length === 0 && contributionFields.length === 0) {
+                        alert('No fields were returned from CiviCRM. Please check your connection and try again.');
+                        return;
+                    }
                     
                     $('.civicrm-field-select').each(function() {
                         const select = $(this);
@@ -817,17 +919,33 @@ class WC_CiviCRM_Settings
                         select.find('option:not(:first)').remove();
                         
                         // Add option groups
-                        select.append('<optgroup label="Contact Fields">');
-                        contactFields.forEach(function(field) {
-                            select.append(`<option value="${field.name}" data-type="Contact">${field.label}</option>`);
-                        });
-                        select.append('</optgroup>');
+                        if (contactFields.length > 0) {
+                            const contactGroup = $('<optgroup label="Contact Fields"></optgroup>');
+                            select.append(contactGroup);
+                            
+                            contactFields.forEach(function(field) {
+                                contactGroup.append(
+                                    $('<option></option>')
+                                        .val(field.name)
+                                        .attr('data-type', 'Contact')
+                                        .text(field.label)
+                                );
+                            });
+                        }
                         
-                        select.append('<optgroup label="Contribution Fields">');
-                        contributionFields.forEach(function(field) {
-                            select.append(`<option value="${field.name}" data-type="Contribution">${field.label}</option>`);
-                        });
-                        select.append('</optgroup>');
+                        if (contributionFields.length > 0) {
+                            const contributionGroup = $('<optgroup label="Contribution Fields"></optgroup>');
+                            select.append(contributionGroup);
+                            
+                            contributionFields.forEach(function(field) {
+                                contributionGroup.append(
+                                    $('<option></option>')
+                                        .val(field.name)
+                                        .attr('data-type', 'Contribution')
+                                        .text(field.label)
+                                );
+                            });
+                        }
                         
                         // Re-select original value if it exists
                         if (originalValue) {
@@ -842,15 +960,20 @@ class WC_CiviCRM_Settings
                             select.closest('tr').find('.field-type-badge').text(fieldType);
                         });
                     });
+                    
+                    // Auto-fetch on page load if no mappings exist yet
+                    if ($('#field-mappings-table tbody tr').length === 0) {
+                        $('#add-mapping').click();
+                    }
                 }
                 
-                // Auto-check connection on page load (if not known)
-                if (initialStatus.status === 'unknown') {
-                    // Trigger a click on the test connection button after a short delay
+                // Auto-fetch fields when connection test succeeds
+                $(document).on('connection:success', function() {
+                    // Wait a moment and then fetch fields
                     setTimeout(function() {
-                        $('#test-civicrm-connection').trigger('click');
+                        $('#fetch-fields').click();
                     }, 1000);
-                }
+                });
             });
         </script>
 <?php
@@ -906,193 +1029,315 @@ class WC_CiviCRM_Settings
             exit;
         }
 
-        try {
-            // Set credentials
+        // Use provided URL and token from the form if available
+        // This allows testing connection before saving settings
+        if (isset($_POST['url']) && !empty($_POST['url'])) {
+            $this->civicrm_url = sanitize_text_field($_POST['url']);
+        } else {
             $this->civicrm_url = get_option('wc_civicrm_url');
+        }
+        
+        if (isset($_POST['token']) && !empty($_POST['token'])) {
+            $this->auth_token = sanitize_text_field($_POST['token']);
+        } else {
             $this->auth_token = get_option('wc_civicrm_auth_token');
+        }
 
-            // Log credentials for debugging
-            error_log('CiviCRM Connection Test - URL: ' . $this->civicrm_url);
-            error_log(
-                'CiviCRM Connection Test - Token: ' .
-                    (empty($this->auth_token) ? 'EMPTY' : substr($this->auth_token, 0, 5) . '...' . substr($this->auth_token, -5))
-            );
-
-            // Validate credentials are not empty
-            if (empty($this->civicrm_url) || empty($this->auth_token)) {
-                throw new Exception('CiviCRM URL or Authentication Token is missing');
+        // Use our dedicated test function
+        $result = $this->test_civicrm_connection();
+        
+        // Log the test result
+        if (class_exists('WC_CiviCRM_Logger')) {
+            if ($result['success']) {
+                WC_CiviCRM_Logger::log_success('connection_test', [
+                    'message' => 'CiviCRM connection test successful',
+                    'url' => $this->civicrm_url
+                ]);
+            } else {
+                WC_CiviCRM_Logger::log_error('connection_test', [
+                    'message' => 'CiviCRM connection test failed',
+                    'error' => $result['message'],
+                    'url' => $this->civicrm_url
+                ]);
             }
-
-            // Build the full API endpoint URL - don't pass it as a parameter
-            // This fixes the "Unknown api parameter: set_endpoint" error
-            $endpoint = rtrim($this->civicrm_url, '/') . '/civicrm/ajax/api4/Contact/get';
-            
-            // Make API request with basic params
-            $response = $this->send_api_request($endpoint, [
-                'entity' => 'Contact',
-                'action' => 'get',
-                'params' => [
-                    'select' => ['id'],
-                    'checkPermissions' => false,
-                    'limit' => 1
-                ]
-            ]);
-
-            // Additional validation of the response
-            if (!isset($response['values']) || empty($response['values'])) {
-                throw new Exception('Invalid response from CiviCRM API');
-            }
-
-            // Store connection status
+        }
+        
+        // Store connection status for future reference
+        // Only update if using saved credentials, not temp ones from the form
+        if (!isset($_POST['url']) && !isset($_POST['token'])) {
             update_option('wc_civicrm_connection_status', [
-                'status' => 'connected',
+                'status' => $result['status'],
                 'last_checked' => time(),
-                'message' => 'Successfully connected to CiviCRM'
+                'message' => $result['message']
             ]);
-
+        }
+        
+        if ($result['success']) {
             wp_send_json_success([
-                'message' => 'Connection successful',
-                'status' => 'connected',
+                'message' => $result['message'],
+                'status' => $result['status'],
                 'status_text' => 'Connected',
-                'details' => $response
+                'details' => $result['data'] ?? []
             ]);
-        } catch (Exception $e) {
-            // Log detailed error information
-            error_log('CiviCRM Connection Test Failed: ' . $e->getMessage());
-
-            WC_CiviCRM_Logger::log_error('test_connection', [
-                'message' => 'CiviCRM Connection Test Failed',
-                'error' => $e->getMessage(),
-                'url' => $this->civicrm_url
-            ]);
-
-            // Store connection status
-            update_option('wc_civicrm_connection_status', [
-                'status' => 'disconnected',
-                'last_checked' => time(),
-                'message' => $e->getMessage()
-            ]);
-
+        } else {
             wp_send_json_error([
-                'message' => 'Connection failed: ' . $e->getMessage(),
-                'status' => 'disconnected',
+                'message' => $result['message'],
+                'status' => $result['status'],
                 'status_text' => 'Disconnected',
-                'debug_info' => 'Please check your API URL and authentication token'
+                'debug_info' => $result['exception'] ?? $result['http_error'] ?? 'Connection failed'
             ], 400);
         }
         exit;
     }
 
-    /**
-     * Send a direct API request to CiviCRM
-     * 
-     * @param string $endpoint The full API endpoint URL
-     * @param array $data The request data
-     * @return array The API response
-     */
-    protected function send_api_request($endpoint, $data)
-    {
-        // Set up the API request
-        $args = [
-            'headers' => [
-                'Content-Type' => 'application/json',
-                'Authorization' => 'Bearer ' . $this->auth_token
-            ],
-            'body' => json_encode($data),
-            'timeout' => 30,
-            'sslverify' => apply_filters('wc_civicrm_sslverify', true)
-        ];
-
-        // Log the request if debug mode is enabled
-        if (get_option('wc_civicrm_debug_mode', false)) {
-            error_log('CiviCRM API Request: ' . $endpoint);
-            error_log('Request Data: ' . wp_json_encode($data, JSON_PRETTY_PRINT));
-        }
-
-        // Make the request
-        $response = wp_remote_post($endpoint, $args);
-
-        // Handle response errors
-        if (is_wp_error($response)) {
-            throw new Exception('API request failed: ' . $response->get_error_message());
-        }
-
-        $response_code = wp_remote_retrieve_response_code($response);
-        $response_body = wp_remote_retrieve_body($response);
-
-        // Log the response if debug mode is enabled
-        if (get_option('wc_civicrm_debug_mode', false)) {
-            error_log('CiviCRM API Response Code: ' . $response_code);
-            error_log('CiviCRM API Response: ' . $response_body);
-        }
-
-        if ($response_code !== 200) {
-            throw new Exception('API returned error: ' . $response_body);
-        }
-
-        $result = json_decode($response_body, true);
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            throw new Exception('Invalid JSON response from API');
-        }
-
-        return $result;
-    }
-
     public function fetch_available_fields()
     {
+        $fields = [
+            'Contact' => [],
+            'Contribution' => []
+        ];
+        
         try {
             // Set credentials
             $this->civicrm_url = get_option('wc_civicrm_url');
             $this->auth_token = get_option('wc_civicrm_auth_token');
-
-            // Fetch Contact fields
-            $contact_fields = $this->send_civicrm_request('Contact', 'getFields', [
-                'select' => ['name', 'label', 'data_type'],
-                'where' => [],
-                'checkPermissions' => false
-            ]);
-
-            if (!empty($contact_fields['values'])) {
-                $this->available_fields['Contact'] = array_map(function ($field) {
-                    if (!is_array($field) || empty($field['name'])) {
-                        return null;
-                    }
-                    return [
-                        'name' => $field['name'] ?? '',
-                        'label' => $field['label'] ?? $field['name'],
-                        'type' => 'Contact'
-                    ];
-                }, $contact_fields['values']);
-                $this->available_fields['Contact'] = array_filter($this->available_fields['Contact']);
+            
+            // Validate credentials
+            if (empty($this->civicrm_url) || empty($this->auth_token)) {
+                error_log('CiviCRM Field Fetch Error: CiviCRM URL or Authentication Token is missing');
+                return $fields;
             }
 
-
-            // Fetch Contribution fields
-            $contribution_fields = $this->send_civicrm_request('Contribution', 'getFields', [
+            // Direct API call for Contact fields using cURL
+            $contact_fields = $this->fetch_entity_fields('Contact');
+            if (!empty($contact_fields) && is_array($contact_fields)) {
+                $fields['Contact'] = $contact_fields;
+            }
+            
+            // Direct API call for Contribution fields using cURL
+            $contribution_fields = $this->fetch_entity_fields('Contribution');
+            if (!empty($contribution_fields) && is_array($contribution_fields)) {
+                $fields['Contribution'] = $contribution_fields;
+            }
+            
+            // Store the fields for later use
+            $this->available_fields = $fields;
+            
+            // Debug output
+            error_log('CiviCRM Field Fetch: Successfully fetched fields');
+            error_log('Contact fields count: ' . count($fields['Contact']));
+            error_log('Contribution fields count: ' . count($fields['Contribution']));
+            error_log('First few Contact fields: ' . json_encode(array_slice($fields['Contact'], 0, 3)));
+            error_log('First few Contribution fields: ' . json_encode(array_slice($fields['Contribution'], 0, 3)));
+            
+            return $fields;
+            
+        } catch (Exception $e) {
+            // Log the error
+            error_log('CiviCRM Field Fetch Error: ' . $e->getMessage());
+            error_log('Error trace: ' . $e->getTraceAsString());
+            
+            // Initialize with empty arrays
+            $this->available_fields = $fields;
+            
+            return $fields;
+        }
+    }
+    
+    /**
+     * Helper method to fetch fields for a specific entity using direct cURL
+     */
+    private function fetch_entity_fields($entity)
+    {
+        $result = [];
+        
+        try {
+            // Prepare endpoint for field fetching
+            $endpoint = rtrim($this->civicrm_url, '/') . '/civicrm/ajax/api4/' . $entity . '/getFields';
+            
+            error_log("Fetching $entity fields from endpoint: $endpoint");
+            
+            // Set up cURL
+            $ch = curl_init($endpoint);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $this->auth_token
+            ]);
+            
+            // Set request parameters
+            $params = [
                 'select' => ['name', 'label', 'data_type'],
                 'where' => [],
                 'checkPermissions' => false
-            ]);
-
-            if (!empty($contribution_fields['values'])) {
-                $this->available_fields['Contribution'] = array_map(function ($field) {
-                    if (!is_array($field) || empty($field['name'])) {
-                        return null;
+            ];
+            
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($params));
+            
+            // Enable more verbose error reporting
+            curl_setopt($ch, CURLOPT_VERBOSE, true);
+            $verbose = fopen('php://temp', 'w+');
+            curl_setopt($ch, CURLOPT_STDERR, $verbose);
+            
+            // Execute request
+            $response = curl_exec($ch);
+            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            
+            // Check for errors
+            if (curl_errno($ch)) {
+                rewind($verbose);
+                $verboseLog = stream_get_contents($verbose);
+                error_log("cURL verbose output for $entity: " . $verboseLog);
+                throw new Exception('cURL error for ' . $entity . ': ' . curl_error($ch));
+            }
+            
+            curl_close($ch);
+            
+            // Log the raw response for debugging
+            error_log("API response for $entity fields (HTTP $http_code): " . substr($response, 0, 500) . (strlen($response) > 500 ? '...' : ''));
+            
+            // Process response
+            if ($http_code >= 200 && $http_code < 300) {
+                $data = json_decode($response, true);
+                
+                if (is_array($data) && isset($data['values']) && is_array($data['values'])) {
+                    foreach ($data['values'] as $field) {
+                        if (is_array($field) && !empty($field['name'])) {
+                            $result[] = [
+                                'name' => $field['name'],
+                                'label' => $field['label'] ?? $field['name'],
+                                'type' => $entity
+                            ];
+                        }
                     }
-                    return [
-                        'name' => $field['name'] ?? '',
-                        'label' => $field['label'] ?? $field['name'],
-                        'type' => 'Contribution'
-                    ];
-                }, $contribution_fields['values']);
-                $this->available_fields['Contribution'] = array_filter($this->available_fields['Contribution']);
+                    
+                    error_log("Successfully processed $entity fields, found: " . count($result));
+                } else {
+                    error_log("Invalid response format for $entity fields: " . json_encode($data));
+                    
+                    // Try alternative API version or format
+                    if (strpos($response, 'api_version') !== false) {
+                        // This might be API v3 response
+                        $alternativeData = json_decode($response, true);
+                        if (isset($alternativeData['values']) && is_array($alternativeData['values'])) {
+                            foreach ($alternativeData['values'] as $key => $field) {
+                                if (is_array($field)) {
+                                    $result[] = [
+                                        'name' => $key,
+                                        'label' => $field['title'] ?? $field['name'] ?? $key,
+                                        'type' => $entity
+                                    ];
+                                }
+                            }
+                            error_log("Fallback: processed $entity fields using alternative format, found: " . count($result));
+                        }
+                    }
+                }
+            } else {
+                error_log("CiviCRM API Error: HTTP $http_code for $entity fields");
+                error_log("Response: " . substr($response, 0, 200) . (strlen($response) > 200 ? '...' : ''));
+                
+                // Try fallback to API v3 if API v4 failed
+                if ($http_code == 404 || $http_code == 400) {
+                    error_log("Attempting fallback to API v3 for $entity");
+                    $result = $this->fetch_entity_fields_v3($entity);
+                }
             }
         } catch (Exception $e) {
-            WC_CiviCRM_Logger::log_error('fetch_fields', [
-                'message' => 'Failed to fetch CiviCRM fields',
-                'error' => $e->getMessage()
-            ]);
+            error_log("Error fetching $entity fields: " . $e->getMessage());
         }
+        
+        // If we couldn't get fields from API, provide fallback defaults
+        if (empty($result)) {
+            $result = $this->get_default_fields($entity);
+            error_log("Using default fields for $entity");
+        }
+        
+        return $result;
+    }
+    
+    /**
+     * Try to fetch fields using CiviCRM API v3 as fallback
+     */
+    private function fetch_entity_fields_v3($entity) 
+    {
+        $result = [];
+        
+        try {
+            // API v3 endpoint
+            $endpoint = rtrim($this->civicrm_url, '/') . '/civicrm/ajax/rest?entity=' . $entity . '&action=getfields&json=1&api_version=3';
+            
+            error_log("Fetching $entity fields from v3 endpoint: $endpoint");
+            
+            // Set up cURL
+            $ch = curl_init($endpoint);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $this->auth_token
+            ]);
+            
+            // Execute request
+            $response = curl_exec($ch);
+            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            
+            curl_close($ch);
+            
+            if ($http_code >= 200 && $http_code < 300) {
+                $data = json_decode($response, true);
+                
+                if (isset($data['values']) && is_array($data['values'])) {
+                    foreach ($data['values'] as $key => $field) {
+                        if (is_array($field)) {
+                            $result[] = [
+                                'name' => $key,
+                                'label' => $field['title'] ?? $field['name'] ?? $key,
+                                'type' => $entity
+                            ];
+                        }
+                    }
+                    error_log("Successfully processed $entity fields via API v3, found: " . count($result));
+                }
+            }
+        } catch (Exception $e) {
+            error_log("Error fetching $entity fields via API v3: " . $e->getMessage());
+        }
+        
+        return $result;
+    }
+
+    /**
+     * Get default field list as fallback when API fails
+     */
+    private function get_default_fields($entity)
+    {
+        if ($entity === 'Contact') {
+            return [
+                ['name' => 'contact_type', 'label' => 'Contact Type', 'type' => 'Contact'],
+                ['name' => 'first_name', 'label' => 'First Name', 'type' => 'Contact'],
+                ['name' => 'last_name', 'label' => 'Last Name', 'type' => 'Contact'],
+                ['name' => 'email', 'label' => 'Email', 'type' => 'Contact'],
+                ['name' => 'phone', 'label' => 'Phone', 'type' => 'Contact'],
+                ['name' => 'street_address', 'label' => 'Street Address', 'type' => 'Contact'],
+                ['name' => 'city', 'label' => 'City', 'type' => 'Contact'],
+                ['name' => 'postal_code', 'label' => 'Postal Code', 'type' => 'Contact'],
+                ['name' => 'state_province_id', 'label' => 'State/Province', 'type' => 'Contact'],
+                ['name' => 'country_id', 'label' => 'Country', 'type' => 'Contact']
+            ];
+        } elseif ($entity === 'Contribution') {
+            return [
+                ['name' => 'financial_type_id', 'label' => 'Financial Type', 'type' => 'Contribution'],
+                ['name' => 'total_amount', 'label' => 'Total Amount', 'type' => 'Contribution'],
+                ['name' => 'currency', 'label' => 'Currency', 'type' => 'Contribution'],
+                ['name' => 'contribution_status_id', 'label' => 'Contribution Status', 'type' => 'Contribution'],
+                ['name' => 'payment_instrument_id', 'label' => 'Payment Method', 'type' => 'Contribution'],
+                ['name' => 'source', 'label' => 'Source', 'type' => 'Contribution'],
+                ['name' => 'receive_date', 'label' => 'Receive Date', 'type' => 'Contribution'],
+                ['name' => 'invoice_id', 'label' => 'Invoice ID', 'type' => 'Contribution']
+            ];
+        }
+        
+        return [];
     }
 
     public function fetch_fields()
@@ -1100,12 +1345,23 @@ class WC_CiviCRM_Settings
         check_ajax_referer('fetch_civicrm_fields');
 
         try {
-            $this->fetch_available_fields();
+            // Log start of fetching
+            error_log('Starting to fetch CiviCRM fields via AJAX handler');
+            
+            // Fetch fields
+            $fields = $this->fetch_available_fields();
+            
+            // Log results
+            error_log('Fetch complete. Contact fields: ' . count($fields['Contact']) . ', Contribution fields: ' . count($fields['Contribution']));
+            
+            // Return success with fields data
             wp_send_json_success([
-                'contact_fields' => $this->available_fields['Contact'] ?? [],
-                'contribution_fields' => $this->available_fields['Contribution'] ?? []
+                'contact_fields' => $fields['Contact'] ?? [],
+                'contribution_fields' => $fields['Contribution'] ?? []
             ]);
         } catch (Exception $e) {
+            error_log('Exception in fetch_fields: ' . $e->getMessage());
+            error_log('Stack trace: ' . $e->getTraceAsString());
             wp_send_json_error('Failed to fetch fields: ' . $e->getMessage());
         }
     }
@@ -1331,6 +1587,20 @@ class WC_CiviCRM_Settings
             'last_checked' => 0,
             'message' => 'Connection status unknown'
         ]);
+        
+        // Make sure we have an array - if it's a string or any other type, use default values
+        if (!is_array($status)) {
+            $status = [
+                'status' => 'unknown',
+                'last_checked' => 0,
+                'message' => 'Connection status data is invalid'
+            ];
+        }
+        
+        // Make sure all required keys exist
+        if (!isset($status['status'])) $status['status'] = 'unknown';
+        if (!isset($status['last_checked'])) $status['last_checked'] = 0;
+        if (!isset($status['message'])) $status['message'] = 'Connection status incomplete';
         
         // If status is more than 15 minutes old, set to unknown
         if (time() - intval($status['last_checked']) > 900) {

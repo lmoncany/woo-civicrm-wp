@@ -1,0 +1,369 @@
+jQuery(document).ready(function ($) {
+  console.log("CiviCRM admin script loaded"); // Add debug logging
+
+  // Tab functionality - simplified
+  function setupTabs() {
+    console.log("Setting up tabs");
+
+    // Hide all tabs first
+    $(".wc-civicrm-tab-content").hide();
+
+    // Show only the first tab by default
+    $(".wc-civicrm-tab-content:first").show();
+    $(".wc-civicrm-tab-button:first").addClass("active");
+
+    // Handle tab clicks
+    $(".wc-civicrm-tab-button").on("click", function (e) {
+      e.preventDefault();
+      var targetTab = $(this).data("tab");
+
+      console.log("Tab clicked:", targetTab);
+
+      // Deactivate all tabs
+      $(".wc-civicrm-tab-button").removeClass("active");
+      $(".wc-civicrm-tab-content").hide();
+
+      // Activate clicked tab
+      $(this).addClass("active");
+      $("#" + targetTab).show();
+    });
+  }
+
+  // Initialize tabs
+  setupTabs();
+
+  // Password toggle
+  $(".toggle-password").on("click", function () {
+    var targetId = $(this).data("target");
+    var input = $("#" + targetId);
+    var icon = $(this).find(".dashicons");
+
+    if (input.attr("type") === "password") {
+      input.attr("type", "text");
+      icon.removeClass("dashicons-visibility").addClass("dashicons-hidden");
+    } else {
+      input.attr("type", "password");
+      icon.removeClass("dashicons-hidden").addClass("dashicons-visibility");
+    }
+  });
+
+  // Test connection handling
+  $("#test-civicrm-connection").on("click", function () {
+    var button = $(this);
+    var resultDiv = $("#connection-test-result");
+
+    // Set status to connecting/testing
+    updateConnectionStatus("connecting", "Testing connection...");
+
+    button.addClass("updating-message").prop("disabled", true);
+    resultDiv.removeClass("success error").html("Testing connection...");
+
+    $.ajax({
+      url: ajaxurl,
+      type: "POST",
+      data: {
+        action: "test_civicrm_connection",
+        nonce: wc_civicrm_admin_params.test_connection_nonce,
+      },
+      success: function (response) {
+        button.removeClass("updating-message").prop("disabled", false);
+
+        if (response.success) {
+          resultDiv
+            .addClass("success")
+            .html(
+              '<span class="dashicons dashicons-yes-alt"></span> ' +
+                response.data.message
+            );
+          updateConnectionStatus("connected", "Connected");
+        } else {
+          resultDiv
+            .addClass("error")
+            .html(
+              '<span class="dashicons dashicons-warning"></span> ' +
+                response.data.message
+            );
+          updateConnectionStatus("disconnected", "Disconnected");
+        }
+      },
+      error: function (xhr) {
+        button.removeClass("updating-message").prop("disabled", false);
+
+        var errorMsg = "Connection test failed";
+        if (xhr.responseJSON && xhr.responseJSON.data) {
+          errorMsg = xhr.responseJSON.data.message;
+        }
+
+        resultDiv
+          .addClass("error")
+          .html(
+            '<span class="dashicons dashicons-warning"></span> ' + errorMsg
+          );
+        updateConnectionStatus("disconnected", "Disconnected");
+      },
+    });
+  });
+
+  // Contact creation test
+  $("#test-contact-creation").on("click", function () {
+    var button = $(this);
+    var resultDiv = $("#contact-creation-test-result");
+
+    button.addClass("updating-message").prop("disabled", true);
+    resultDiv.removeClass("success error").html("Testing contact creation...");
+
+    $.ajax({
+      url: ajaxurl,
+      type: "POST",
+      data: {
+        action: "test_contact_creation",
+        nonce: wc_civicrm_admin_params.test_contact_creation_nonce,
+      },
+      success: function (response) {
+        button.removeClass("updating-message").prop("disabled", false);
+
+        if (response.success) {
+          resultDiv
+            .addClass("success")
+            .html(
+              '<span class="dashicons dashicons-yes-alt"></span> ' +
+                response.data.message
+            );
+        } else {
+          resultDiv
+            .addClass("error")
+            .html(
+              '<span class="dashicons dashicons-warning"></span> ' +
+                response.data.message
+            );
+        }
+      },
+      error: function () {
+        button.removeClass("updating-message").prop("disabled", false);
+        resultDiv
+          .addClass("error")
+          .html(
+            '<span class="dashicons dashicons-warning"></span> Contact creation test failed'
+          );
+      },
+    });
+  });
+
+  // Contribution creation test
+  $("#test-contribution-creation").on("click", function () {
+    var button = $(this);
+    var resultDiv = $("#contribution-creation-test-result");
+
+    button.addClass("updating-message").prop("disabled", true);
+    resultDiv
+      .removeClass("success error")
+      .html("Testing contribution creation...");
+
+    $.ajax({
+      url: ajaxurl,
+      type: "POST",
+      data: {
+        action: "test_contribution_creation",
+        nonce: wc_civicrm_admin_params.test_contribution_creation_nonce,
+      },
+      success: function (response) {
+        button.removeClass("updating-message").prop("disabled", false);
+
+        if (response.success) {
+          resultDiv
+            .addClass("success")
+            .html(
+              '<span class="dashicons dashicons-yes-alt"></span> ' +
+                response.data.message
+            );
+        } else {
+          resultDiv
+            .addClass("error")
+            .html(
+              '<span class="dashicons dashicons-warning"></span> ' +
+                response.data.message
+            );
+        }
+      },
+      error: function () {
+        button.removeClass("updating-message").prop("disabled", false);
+        resultDiv
+          .addClass("error")
+          .html(
+            '<span class="dashicons dashicons-warning"></span> Contribution creation test failed'
+          );
+      },
+    });
+  });
+
+  // Add mapping
+  $("#add-mapping").on("click", function () {
+    $("#field-mappings-table tbody").append(getNewRow());
+  });
+
+  // Remove mapping
+  $(document).on("click", ".remove-mapping", function () {
+    $(this).closest("tr").remove();
+  });
+
+  // Fetch fields
+  $("#fetch-fields").on("click", function () {
+    var button = $(this);
+    var resultSpan = $("#fetch-result");
+
+    button.addClass("updating-message").prop("disabled", true);
+    resultSpan.html(
+      '<span class="spinner is-active"></span> Fetching fields...'
+    );
+
+    $.ajax({
+      url: ajaxurl,
+      type: "POST",
+      data: {
+        action: "fetch_civicrm_fields",
+        _ajax_nonce: wc_civicrm_admin_params.fetch_fields_nonce,
+      },
+      success: function (response) {
+        button.removeClass("updating-message").prop("disabled", false);
+
+        if (response.success) {
+          resultSpan.html(
+            '<span class="dashicons dashicons-yes-alt success"></span> Fields fetched successfully'
+          );
+          updateFieldSelects(response.data);
+        } else {
+          resultSpan.html(
+            '<span class="dashicons dashicons-warning error"></span> ' +
+              response.data
+          );
+        }
+
+        setTimeout(function () {
+          resultSpan.html("");
+        }, 5000);
+      },
+      error: function () {
+        button.removeClass("updating-message").prop("disabled", false);
+        resultSpan.html(
+          '<span class="dashicons dashicons-warning error"></span> Network error'
+        );
+
+        setTimeout(function () {
+          resultSpan.html("");
+        }, 5000);
+      },
+    });
+  });
+
+  function getNewRow() {
+    // This would be populated from PHP via wp_localize_script in a real implementation
+    const wc_fields = {
+      billing_first_name: "Billing First Name",
+      billing_last_name: "Billing Last Name",
+      billing_email: "Billing Email",
+      // etc.
+    };
+
+    let options = '<option value="">Select WooCommerce Field</option>';
+    for (const [value, label] of Object.entries(wc_fields)) {
+      options += `<option value="${value}">${label}</option>`;
+    }
+
+    const rowId = "new_" + Math.random().toString(36).substr(2, 9);
+    return `
+            <tr>
+                <td>
+                    <select name="wc_civicrm_field_mappings[${rowId}][wc_field]" class="regular-text">
+                        ${options}
+                    </select>
+                </td>
+                <td>
+                    <select name="wc_civicrm_field_mappings[${rowId}][civicrm]" 
+                            class="regular-text civicrm-field-select"
+                            data-original-value=""
+                            data-original-type="">
+                        <option value="">Select CiviCRM Field</option>
+                    </select>
+                    <input type="hidden" name="wc_civicrm_field_mappings[${rowId}][type]" 
+                           class="field-type-input" value="">
+                </td>
+                <td class="field-type">
+                    <span class="field-type-badge"></span>
+                </td>
+                <td>
+                    <button type="button" class="button button-small remove-mapping">
+                        <span class="dashicons dashicons-trash"></span>
+                    </button>
+                </td>
+            </tr>`;
+  }
+
+  function updateFieldSelects(fields) {
+    const contactFields = fields.contact_fields || [];
+    const contributionFields = fields.contribution_fields || [];
+
+    $(".civicrm-field-select").each(function () {
+      const select = $(this);
+      const originalValue = select.data("original-value");
+      const originalType = select.data("original-type");
+      const typeInput = select.siblings(".field-type-input");
+
+      // Clear existing options except the first one
+      select.find("option:not(:first)").remove();
+
+      // Add option groups
+      select.append('<optgroup label="Contact Fields">');
+      contactFields.forEach(function (field) {
+        select.append(
+          `<option value="${field.name}" data-type="Contact">${field.label}</option>`
+        );
+      });
+      select.append("</optgroup>");
+
+      select.append('<optgroup label="Contribution Fields">');
+      contributionFields.forEach(function (field) {
+        select.append(
+          `<option value="${field.name}" data-type="Contribution">${field.label}</option>`
+        );
+      });
+      select.append("</optgroup>");
+
+      // Re-select original value if it exists
+      if (originalValue) {
+        select.val(originalValue);
+      }
+
+      // Set change event to update field type
+      select.off("change").on("change", function () {
+        const selected = $(this).find("option:selected");
+        const fieldType = selected.data("type") || "";
+        typeInput.val(fieldType);
+        select.closest("tr").find(".field-type-badge").text(fieldType);
+      });
+    });
+  }
+
+  // Update connection status indicators
+  function updateConnectionStatus(status, statusText) {
+    $("#main-connection-indicator, #connection-indicator")
+      .removeClass("connected disconnected connecting")
+      .addClass(status);
+
+    $("#main-connection-status-text, #connection-status-text").text(statusText);
+
+    $(".wc-civicrm-connection-status")
+      .removeClass("connected disconnected")
+      .addClass(status);
+  }
+
+  // Initial connection check on page load
+  var initialStatus = $(".connection-indicator").first().attr("class");
+  if (initialStatus && initialStatus.indexOf("unknown") === -1) {
+    // Use existing status
+  } else {
+    // Auto-check connection if status is unknown
+    setTimeout(function () {
+      $("#test-civicrm-connection").trigger("click");
+    }, 1000);
+  }
+});

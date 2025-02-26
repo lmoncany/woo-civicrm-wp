@@ -535,20 +535,10 @@ class WooCommerceCiviCRMIntegration
                 return $existing_contact['id'];
             }
 
-            // Prepare create parameters with more comprehensive data
+            // Create new contact first, without the email
             $create_params = [
                 'values' => array_merge($contact_data, [
-                    'email' => [
-                        'email' => $order_data['billing_email'],
-                        'is_primary' => 1,
-                        'location_type_id' => 1 // Typically 'Home' location type
-                    ],
-                    // Add additional contact details if available
-                    'phone' => !empty($order_data['billing_phone']) ? [
-                        'phone' => $order_data['billing_phone'],
-                        'is_primary' => 1,
-                        'phone_type_id' => 1 // Typically 'Phone' type
-                    ] : null,
+                    // Add address if available
                     'address' => [
                         'street_address' => $order_data['billing_address_1'] ?? '',
                         'supplemental_address_1' => $order_data['billing_address_2'] ?? '',
@@ -572,15 +562,46 @@ class WooCommerceCiviCRMIntegration
                 throw new Exception('Failed to create contact: No ID returned');
             }
 
+            $contact_id = $create_response['values'][0]['id'];
+
+            // Now create the email in a separate request
+            $email_params = [
+                'values' => [
+                    'contact_id' => $contact_id,
+                    'email' => $order_data['billing_email'],
+                    'is_primary' => 1,
+                    'location_type_id' => 1 // Typically 'Home' location type
+                ],
+                'checkPermissions' => false
+            ];
+            
+            $email_response = $this->send_civicrm_request('Email', 'create', $email_params);
+            
+            // Create phone if available
+            if (!empty($order_data['billing_phone'])) {
+                $phone_params = [
+                    'values' => [
+                        'contact_id' => $contact_id,
+                        'phone' => $order_data['billing_phone'],
+                        'is_primary' => 1,
+                        'phone_type_id' => 1, // Typically 'Phone' type
+                        'location_type_id' => 1 // Typically 'Home' location type
+                    ],
+                    'checkPermissions' => false
+                ];
+                
+                $this->send_civicrm_request('Phone', 'create', $phone_params);
+            }
+
             // Log new contact creation with more details
             WC_CiviCRM_Logger::log_success('contact_creation', [
                 'message' => 'New contact created',
-                'contact_id' => $create_response['values'][0]['id'],
+                'contact_id' => $contact_id,
                 'email' => $order_data['billing_email'],
                 'name' => $order_data['billing_first_name'] . ' ' . $order_data['billing_last_name']
             ]);
 
-            return $create_response['values'][0]['id'];
+            return $contact_id;
         } catch (Exception $e) {
             // Comprehensive error logging
             WC_CiviCRM_Logger::log_error('contact_process_error', [
@@ -644,7 +665,7 @@ class WooCommerceCiviCRMIntegration
                 <?php
                 settings_fields('wc_civicrm_settings');
                 do_settings_sections('wc-civicrm-settings');
-                submit_button('Save Settings');
+                // submit_button('Save Settings');
                 ?>
             </form>
         </div>

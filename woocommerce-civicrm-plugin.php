@@ -1,13 +1,17 @@
 <?php
-/*
-    Plugin Name: WooCommerce to CiviCRM Integration
-    Description: Automatically creates CiviCRM orders from WooCommerce orders
-    Version: 1.0
-    Author: Loic Moncany
-    Author URI: https://iclick.space
-    License: GPLv2 or later
-    Text Domain: wc-civicrm
-    */
+/**
+ * Plugin Name: WooCommerce to CiviCRM Integration
+ * Description: Automatically creates CiviCRM orders from WooCommerce orders
+ * Version: 1.0
+ * Author: Loic Moncany
+ * Author URI: https://iclick.space
+ * License: GPLv2 or later
+ * Text Domain: wc-civicrm
+ * Domain Path: /languages
+ * Requires at least: 5.0
+ * Requires PHP: 7.2
+ * WC requires at least: 3.0
+ */
 
 if (!defined('WPINC')) {
     die;

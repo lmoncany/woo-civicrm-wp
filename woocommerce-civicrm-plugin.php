@@ -3,7 +3,7 @@
     Plugin Name: WooCommerce to CiviCRM Integration
     Description: Automatically creates CiviCRM orders from WooCommerce orders
     Version: 1.0
-    Author: Bolt
+    Author: Loic Moncany
     Author URI: https://example.com
     License: GPLv2 or later
     Text Domain: wc-civicrm

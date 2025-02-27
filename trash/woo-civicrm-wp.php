@@ -1,6 +1,6 @@
 <?php
 /**
- * Plugin Name: WooCommerce CiviCRM Integration
+ * Plugin Name: TEST CiviCRM Integration
  * Description: Seamlessly integrate WooCommerce with CiviCRM
  * Version: 1.0.0
  * Author: Your Name
@@ -83,4 +83,4 @@ class WC_CiviCRM_Integration {
 }
 
 // Initialize the plugin
-new WC_CiviCRM_Integration();
+// new WC_CiviCRM_Integration();

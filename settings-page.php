@@ -82,24 +82,31 @@ class WC_CiviCRM_Settings
     use WC_CiviCRM_API_Request;
 
     public $available_fields = [];
-    public $civicrm_url;
-    public $auth_token;
+    private $civicrm_url;
+    private $auth_token;
+    private $site_key;
+    private $logger;
+    private $field_mappings;
 
     public function __construct()
     {
-        add_action('admin_init', [$this, 'register_settings']);
-        add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_scripts']);
-        add_action('wp_ajax_test_civicrm_connection', [$this, 'test_connection']);
-        add_action('wp_ajax_fetch_civicrm_fields', [$this, 'fetch_fields']);
-        add_action('wp_ajax_test_contact_creation', [$this, 'test_contact_creation']);
-        add_action('wp_ajax_test_contribution_creation', [$this, 'test_contribution_creation']);
+        // Get credentials
+        $this->civicrm_url = get_option('wc_civicrm_url', '');
+        $this->auth_token = get_option('wc_civicrm_auth_token', '');
+        $this->site_key = get_option('wc_civicrm_site_key', '');
         
-        // Try to fetch fields if we have connection settings
-        $url = get_option('wc_civicrm_url');
-        $token = get_option('wc_civicrm_auth_token');
-        if (!empty($url) && !empty($token)) {
-            // $this->fetch_available_fields();
-        }
+        // Check if field mappings are saved in the database
+        $this->field_mappings = get_option('wc_civicrm_field_mappings', []);
+        
+        // Register AJAX handlers
+        add_action('wp_ajax_fetch_financial_types', array($this, 'ajax_fetch_financial_types'));
+        add_action('wp_ajax_test_civicrm_connection', array($this, 'test_connection'));
+        add_action('wp_ajax_test_contact_creation', array($this, 'test_contact_creation'));
+        add_action('wp_ajax_test_contribution_creation', array($this, 'test_contribution_creation'));
+        add_action('wp_ajax_fetch_civicrm_fields', array($this, 'fetch_fields'));
+        
+        add_action('admin_init', array($this, 'register_settings'));
+        add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_scripts'));
     }
 
     /**
@@ -109,8 +116,7 @@ class WC_CiviCRM_Settings
      */
     public function enqueue_admin_scripts($hook)
     {
-        // Only enqueue on our settings page
-        if ($hook !== 'toplevel_page_wc-civicrm-settings') {
+        if (strpos($hook, 'wc-civicrm') === false) {
             return;
         }
 
@@ -126,14 +132,14 @@ class WC_CiviCRM_Settings
             'wc-civicrm-admin-styles',
             $plugin_url . 'assets/css/admin-styles.css',
             [],
-            '1.0.0'
+            '1.0'
         );
 
         wp_enqueue_script(
             'wc-civicrm-admin-scripts',
             $plugin_url . 'assets/js/admin-scripts.js',
             ['jquery'],
-            '1.0.0',
+            '1.0',
             true
         );
 
@@ -141,7 +147,8 @@ class WC_CiviCRM_Settings
             'test_connection_nonce' => wp_create_nonce('test_civicrm_connection'),
             'test_contact_creation_nonce' => wp_create_nonce('test_contact_creation'),
             'test_contribution_creation_nonce' => wp_create_nonce('test_contribution_creation'),
-            'fetch_fields_nonce' => wp_create_nonce('fetch_civicrm_fields')
+            'fetch_fields_nonce' => wp_create_nonce('fetch_civicrm_fields'),
+            'fetch_financial_types_nonce' => wp_create_nonce('fetch_financial_types')
         ]);
     }
 
@@ -212,6 +219,7 @@ class WC_CiviCRM_Settings
         ]);
         register_setting('wc_civicrm_settings', 'wc_civicrm_debug_mode');
         register_setting('wc_civicrm_settings', 'wc_civicrm_connection_status');
+        register_setting('wc_civicrm_settings', 'wc_civicrm_contribution_type_id');
 
         // Add settings sections
         add_settings_section(
@@ -341,6 +349,7 @@ class WC_CiviCRM_Settings
                     <nav class="wc-civicrm-tabs">
                         <button type="button" class="wc-civicrm-tab-button active" data-tab="tab-connection">Connection</button>
                         <button type="button" class="wc-civicrm-tab-button" data-tab="tab-mappings">Field Mappings</button>
+                        <button type="button" class="wc-civicrm-tab-button" data-tab="tab-contribution">Contribution</button>
                         <button type="button" class="wc-civicrm-tab-button" data-tab="tab-testing">Testing</button>
                         <button type="button" class="wc-civicrm-tab-button" data-tab="tab-debug">Debug</button>
                     </nav>
@@ -388,7 +397,22 @@ class WC_CiviCRM_Settings
                         </div>
                     </div>
                     
-                    <!-- Third tab: Testing -->
+                    <!-- Third tab: Contribution Settings -->
+                    <div id="tab-contribution" class="wc-civicrm-tab-content">
+                        <div class="wc-civicrm-section">
+                            <h2>CiviCRM Contribution Settings</h2>
+                            <p>Configure how WooCommerce orders are mapped to CiviCRM contributions.</p>
+                            
+                            <table class="form-table">
+                                <tr>
+                                    <th scope="row">Financial Type</th>
+                                    <td><?php $this->contribution_type_callback(); ?></td>
+                                </tr>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <!-- Fourth tab: Testing -->
                     <div id="tab-testing" class="wc-civicrm-tab-content">
                         <div class="wc-civicrm-section">
                             <h2>CiviCRM Integration Tests</h2>
@@ -404,7 +428,7 @@ class WC_CiviCRM_Settings
                         </div>
                     </div>
                     
-                    <!-- Fourth tab: Debug -->
+                    <!-- Fifth tab: Debug -->
                     <div id="tab-debug" class="wc-civicrm-tab-content">
                         <div class="wc-civicrm-section">
                             <h2>Debug Settings</h2>
@@ -1466,116 +1490,107 @@ class WC_CiviCRM_Settings
         exit;
     }
 
-    public function test_contribution_creation()
-    {
-        // Verify nonce and user capabilities
-        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'test_contribution_creation') || !current_user_can('manage_options')) {
-            wp_send_json_error([
-                'message' => 'Unauthorized access',
-                'debug_info' => 'Invalid nonce or insufficient permissions'
-            ], 403);
-            exit;
+    /**
+     * Test contribution creation in CiviCRM
+     */
+    public function test_contribution_creation() {
+        // Check if user has permission
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'You do not have permission to perform this action']);
+            return;
         }
 
-        try {
-            // Set credentials
-            $this->civicrm_url = get_option('wc_civicrm_url');
-            $this->auth_token = get_option('wc_civicrm_auth_token');
+        // Verify nonce
+        check_ajax_referer('test_contribution_creation', 'nonce');
 
-            // Validate credentials are not empty
-            if (empty($this->civicrm_url) || empty($this->auth_token)) {
-                throw new Exception('CiviCRM URL or Authentication Token is missing');
+        // Check if test contact ID is available
+        $contact_id = 18201;
+        if (!$contact_id) {
+            wp_send_json_error(['message' => 'Test contact not found. Please create a test contact first.']);
+            return;
+        }
+
+        // Get selected financial type (default to 1 - Donation)
+        $financial_type_id = 9;
+        
+        // Get financial type name for display
+        $financial_types = $this->get_saved_financial_types();
+        $financial_type_name = 'Donation';
+        
+        foreach ($financial_types as $type) {
+            if ($type['id'] == $financial_type_id) {
+                $financial_type_name = $type['name'];
+                break;
             }
+        }
 
-            // Prepare endpoint for contribution creation
-            $endpoint = rtrim($this->civicrm_url, '/') . '/civicrm/ajax/api4/Contribution/create';
+        // Prepare test contribution data
+        $test_contribution_data = [
+            'contact_id' => (int)$contact_id,
+            'financial_type_id' => (int)$financial_type_id,
+            'total_amount' => 10.00,
+            'currency' => 'USD',
+            'source' => 'WooCommerce CiviCRM Test',
+            'receive_date' => date('Y-m-d H:i:s'),
+            'payment_instrument_id' => 1, // Credit Card
+            'is_pay_later' => 0,
+            'is_test' => 1,
+            'contribution_status_id' => 1 // Completed
+        ];
 
-            // Prepare test contribution data
-            $test_contribution_data = [
-                'contact_id' => 18224,
-                // 'contact_id' => $this->get_test_contact_id(), // Get an existing contact ID
-                'financial_type_id' => 1, // Donation (default financial type)
-                'total_amount' => 50.00,
-                'currency' => 'EUR',
-                'contribution_status_id' => 1, // Completed
-                'payment_instrument_id' => 1, // Credit Card (adjust as needed)
-            ];
+        // Set up endpoint for contribution creation
+        $endpoint = rtrim($this->civicrm_url, '/') . '/civicrm/ajax/api4/Contribution/create';
 
-            // Prepare the API request
-            $civi_fields = [
+        try {
+            // Use the trait's send_civicrm_request method
+            $response = $this->send_civicrm_request('Contribution', 'create', [
                 'values' => $test_contribution_data,
                 'checkPermissions' => false,
-                '_endpoint' => $endpoint
-            ];
+                '_endpoint' => $endpoint // Use the specific endpoint
+            ]);
 
-            // Attempt to create test contribution
-            $response = $this->send_civicrm_request('Contribution', 'create', $civi_fields);
+            // Check for API errors
+            if (isset($response['error_message'])) {
+                $this->log_error('Failed to create test contribution: ' . $response['error_message']);
+                wp_send_json_error(['message' => 'Failed to create test contribution: ' . $response['error_message']]);
+                return;
+            }
 
             // Validate the response
             if (!isset($response['values']) || empty($response['values'])) {
-                throw new Exception('Failed to create test contribution');
+                $this->log_error('Invalid response when creating test contribution');
+                wp_send_json_error(['message' => 'Invalid response from CiviCRM']);
+                return;
             }
 
-            // Extract created contribution details
+            // Get created contribution details
             $created_contribution = $response['values'][0];
 
             wp_send_json_success([
                 'message' => 'Test contribution created successfully',
                 'contribution_details' => [
                     'id' => $created_contribution['id'],
-                    'contact_id' => $test_contribution_data['contact_id'],
-                    'total_amount' => $test_contribution_data['total_amount'],
-                    'currency' => $test_contribution_data['currency']
+                    'amount' => $test_contribution_data['total_amount'],
+                    'currency' => $test_contribution_data['currency'],
+                    'financial_type_id' => $financial_type_id,
+                    'financial_type_name' => $financial_type_name,
+                    'contact_id' => $test_contribution_data['contact_id']
                 ]
             ]);
         } catch (Exception $e) {
-            // Log detailed error information
-            error_log('CiviCRM Test Contribution Creation Failed: ' . $e->getMessage());
-
-            WC_CiviCRM_Logger::log_error('test_contribution_creation', [
-                'message' => 'Test Contribution Creation Failed',
-                'error' => $e->getMessage(),
-                'url' => $this->civicrm_url
-            ]);
-
-            wp_send_json_error([
-                'message' => 'Contribution creation failed: ' . $e->getMessage(),
-                'debug_info' => 'Please check your CiviCRM API configuration'
-            ], 400);
+            $this->log_error('Exception creating test contribution: ' . $e->getMessage());
+            wp_send_json_error(['message' => 'Error: ' . $e->getMessage()]);
+            return;
         }
-        exit;
     }
-
-    private function get_test_contact_id()
-    {
-        // First, try to get the last created test contact
-        $contact_id = get_option('wc_civicrm_test_contact_id');
-
-        if (!$contact_id) {
-            // If no test contact exists, create one
-            $test_contact_data = [
-                'contact_type' => 'Individual',
-                'first_name' => 'Test',
-                'last_name' => 'Contributor_' . time()
-            ];
-
-            $endpoint = rtrim($this->civicrm_url, '/') . '/civicrm/ajax/api4/Contact/create';
-
-            $response = $this->send_civicrm_request('Contact', 'create', [
-                'values' => $test_contact_data,
-                'checkPermissions' => false,
-                '_endpoint' => $endpoint
-            ]);
-
-            if (!isset($response['values']) || empty($response['values'])) {
-                throw new Exception('Failed to create test contact for contribution');
-            }
-
-            $contact_id = $response['values'][0]['id'];
-            update_option('wc_civicrm_test_contact_id', $contact_id);
-        }
-
-        return $contact_id;
+    
+    /**
+     * Get test contact ID from transient
+     * 
+     * @return int|bool Contact ID or false if not found
+     */
+    private function get_test_contact_id() {
+        return get_transient('wc_civicrm_test_contact_id');
     }
 
     /**
@@ -1609,6 +1624,184 @@ class WC_CiviCRM_Settings
         }
         
         return $status;
+    }
+
+    public function contribution_type_callback()
+    {
+        $selected_type = get_option('wc_civicrm_contribution_type_id', 1);
+        $financial_types = $this->get_saved_financial_types();
+        ?>
+        <div class="wc-civicrm-field-wrapper">
+            <select name="wc_civicrm_contribution_type_id" id="wc-civicrm-contribution-type">
+                <?php if (empty($financial_types)): ?>
+                    <option value="1">Donation</option>
+                <?php else: ?>
+                    <?php foreach ($financial_types as $type): ?>
+                        <option value="<?php echo esc_attr($type['id']); ?>" <?php selected($selected_type, $type['id']); ?>>
+                            <?php echo esc_html($type['name']); ?>
+                        </option>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </select>
+            <p class="description">Select the financial type to use for contributions created from WooCommerce orders.</p>
+            <button type="button" id="refresh-financial-types" class="button button-secondary">
+                <span class="dashicons dashicons-update"></span> Refresh Types
+            </button>
+            <div id="financial-types-message"></div>
+        </div>
+        <?php
+    }
+
+    /**
+     * Fetch available financial types from CiviCRM
+     * 
+     * @return array List of financial types with id and name
+     */
+    public function get_financial_types() {
+        // Check if credentials are set - site_key is optional
+        if (empty($this->civicrm_url) || empty($this->auth_token)) {
+            return [
+                'error' => true,
+                'message' => 'CiviCRM credentials not set'
+            ];
+        }
+
+        // Set up endpoint and headers
+        $endpoint = rtrim($this->civicrm_url, '/') . '/civicrm/ajax/api4/FinancialType/get';
+        $headers = [
+            'X-Civi-Auth' => 'Bearer ' . $this->auth_token,
+            'X-Requested-With' => 'XMLHttpRequest',
+            'Content-Type' => 'application/json'
+        ];
+
+        // Set up data
+        $data = [
+            'select' => ['id', 'name'],
+            'where' => [['is_active', '=', true]],
+            'checkPermissions' => false
+        ];
+        
+        // Add site_key only if it's available
+        if (!empty($this->site_key)) {
+            $data['site_key'] = $this->site_key;
+        }
+
+        // Send request
+        $response = wp_remote_post($endpoint, [
+            'headers' => $headers,
+            'body' => json_encode($data),
+            'timeout' => 30
+        ]);
+
+        // Check for errors
+        if (is_wp_error($response)) {
+            $this->log_error('Failed to fetch financial types: ' . $response->get_error_message());
+            return [
+                'error' => true,
+                'message' => 'Failed to connect to CiviCRM: ' . $response->get_error_message()
+            ];
+        }
+
+        // Check status code
+        $status_code = wp_remote_retrieve_response_code($response);
+        if ($status_code !== 200) {
+            $this->log_error('Failed to fetch financial types. Status code: ' . $status_code);
+            return [
+                'error' => true,
+                'message' => 'Failed to fetch financial types. Status code: ' . $status_code
+            ];
+        }
+
+        // Get response body
+        $body = wp_remote_retrieve_body($response);
+        $decoded_body = json_decode($body, true);
+
+        if (!$decoded_body || !isset($decoded_body['values'])) {
+            $this->log_error('Invalid response when fetching financial types');
+            return [
+                'error' => true,
+                'message' => 'Invalid response from CiviCRM'
+            ];
+        }
+
+        return $decoded_body['values'];
+    }
+
+    /**
+     * AJAX handler for fetching financial types
+     */
+    public function ajax_fetch_financial_types() {
+        // Check nonce
+        check_ajax_referer('fetch_financial_types', 'nonce');
+
+        // Check user capability
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'You do not have permission to perform this action']);
+            return;
+        }
+
+        // Get financial types
+        $financial_types = $this->get_financial_types();
+
+        // Check for errors
+        if (isset($financial_types['error'])) {
+            wp_send_json_error(['message' => $financial_types['message']]);
+            return;
+        }
+
+        // Format response data
+        $options = [];
+        foreach ($financial_types as $type) {
+            $options[] = [
+                'id' => $type['id'],
+                'name' => $type['name']
+            ];
+        }
+
+        // Save to option for future use
+        update_option('wc_civicrm_financial_types', $options);
+
+        wp_send_json_success([
+            'message' => 'Financial types refreshed successfully',
+            'types' => $options
+        ]);
+    }
+
+    /**
+     * Log error message
+     */
+    private function log_error($message) {
+        if (class_exists('WC_CiviCRM_Logger')) {
+            WC_CiviCRM_Logger::log_error('settings_error', ['message' => $message]);
+        } else {
+            error_log('WC_CiviCRM Settings Error: ' . $message);
+        }
+    }
+
+    /**
+     * Get financial types from option or fetch if empty
+     * 
+     * @return array List of financial types
+     */
+    public function get_saved_financial_types() {
+        $types = get_option('wc_civicrm_financial_types', []);
+        
+        // If empty and we have credentials, try to fetch
+        if (empty($types) && !empty($this->civicrm_url) && !empty($this->auth_token)) {
+            $fetched_types = $this->get_financial_types();
+            if (!isset($fetched_types['error']) && !empty($fetched_types)) {
+                $types = [];
+                foreach ($fetched_types as $type) {
+                    $types[] = [
+                        'id' => $type['id'],
+                        'name' => $type['name']
+                    ];
+                }
+                update_option('wc_civicrm_financial_types', $types);
+            }
+        }
+        
+        return $types;
     }
 }
 

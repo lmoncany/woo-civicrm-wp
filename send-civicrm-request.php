@@ -152,15 +152,31 @@ trait WC_CiviCRM_API_Request
         }
     }
 
+    /**
+     * Send a request to the CiviCRM API
+     *
+     * @param string $entity The entity to access (e.g., Contact, Email)
+     * @param string $action The action to perform (e.g., get, create)
+     * @param array $params The parameters for the request
+     * @return array The API response
+     * @throws Exception If the API connection fails
+     */
     public function send_civicrm_request($entity, $action, $params = [])
     {
         // Validate required parameters
         if (empty($entity) || empty($action)) {
-            throw new Exception('Entity and action are required');
+            throw new Exception('Entity and action are required for API requests');
         }
 
-        // Prepare the endpoint
-        $endpoint = $params['_endpoint'] ?? $this->get_api_endpoint($entity, $action);
+        // Check if user provided a custom endpoint
+        if (isset($params['_endpoint']) && !empty($params['_endpoint'])) {
+            $endpoint = $params['_endpoint'];
+            // Remove the _endpoint param since CiviCRM API doesn't expect it
+            unset($params['_endpoint']);
+        } else {
+            // Construct the CiviCRM API4 endpoint based on the entity and action
+            $endpoint = rtrim($this->civicrm_url, '/') . '/civicrm/ajax/api4/' . $entity . '/' . $action;
+        }
 
         // Prepare request parameters
         // For 'get' actions, pass parameters directly
@@ -170,6 +186,29 @@ trait WC_CiviCRM_API_Request
             ];
         } else {
             // For other actions, use values key
+            
+            // Ensure numeric fields are actually numbers
+            if ($action === 'create' && isset($params['values'])) {
+                // Fields that should be integers
+                $int_fields = ['contact_id', 'financial_type_id', 'payment_instrument_id', 
+                               'contribution_status_id', 'is_test', 'is_pay_later'];
+                
+                // Fields that should be floats
+                $float_fields = ['total_amount', 'fee_amount', 'net_amount', 'non_deductible_amount'];
+                
+                foreach ($int_fields as $field) {
+                    if (isset($params['values'][$field]) && is_string($params['values'][$field])) {
+                        $params['values'][$field] = (int)$params['values'][$field];
+                    }
+                }
+                
+                foreach ($float_fields as $field) {
+                    if (isset($params['values'][$field]) && is_string($params['values'][$field])) {
+                        $params['values'][$field] = (float)$params['values'][$field];
+                    }
+                }
+            }
+            
             $request_data = [
                 'params' => json_encode([
                     'values' => $params['values'] ?? [],
@@ -185,10 +224,6 @@ trait WC_CiviCRM_API_Request
                 $request_data['params'] = json_encode($params_array);
             }
         }
-
-
-        // Remove any additional metadata keys that might interfere with the request
-        
 
         // Prepare headers
         $headers = [
@@ -220,7 +255,8 @@ trait WC_CiviCRM_API_Request
             $response_raw = @file_get_contents($endpoint, false, $request_context);
 
             if ($response_raw === false) {
-                throw new Exception('Failed to connect to CiviCRM API');
+                $error = error_get_last();
+                throw new Exception('Failed to connect to CiviCRM API: ' . ($error['message'] ?? 'Unknown error'));
             }
 
             $response = json_decode($response_raw, true);
@@ -228,12 +264,49 @@ trait WC_CiviCRM_API_Request
             // Log HTTP status and raw response
             error_log('HTTP Status: ' . (isset($http_response_header[0]) ? $http_response_header[0] : 'Unknown'));
             error_log('Raw Response: ' . $response_raw);
-
-            // Check for API errors
-            if (isset($response['status']) && $response['status'] == 500) {
-                throw new Exception($response['error_message'] ?? 'Unknown API error');
+            
+            // Log detailed error information if there's a DB error
+            if (isset($response['error_message']) && strpos($response['error_message'], 'DB Error') !== false) {
+                error_log('DB Error detected in CiviCRM API response:');
+                error_log('Error message: ' . $response['error_message']);
+                error_log('Status code: ' . ($response['status'] ?? 'Unknown'));
+                
+                // If it's a constraint violation, provide additional context
+                if (strpos($response['error_message'], 'constraint violation') !== false) {
+                    error_log('Constraint violation detected - this typically means:');
+                    error_log('1. A referenced ID (like financial_type_id) does not exist');
+                    error_log('2. A required field is missing or has an invalid value');
+                    error_log('3. A unique field has a duplicate value');
+                    
+                    // If we're creating a contribution, provide specific guidance
+                    if ($entity === 'Contribution' && $action === 'create') {
+                        error_log('For contributions, check that:');
+                        error_log('- financial_type_id exists in your CiviCRM instance');
+                        error_log('- payment_instrument_id exists in your CiviCRM instance');
+                        error_log('- contribution_status_id exists in your CiviCRM instance');
+                        error_log('- contact_id exists and is valid');
+                        
+                        // Try to get available financial types for debugging
+                        try {
+                            $debug_ft_result = $this->send_civicrm_request('FinancialType', 'get', [
+                                'select' => ['id', 'name'],
+                                'checkPermissions' => false
+                            ]);
+                            
+                            if (isset($debug_ft_result['values']) && is_array($debug_ft_result['values'])) {
+                                error_log('Available financial types in CiviCRM:');
+                                foreach ($debug_ft_result['values'] as $ft) {
+                                    error_log("ID: {$ft['id']} - Name: {$ft['name']}");
+                                }
+                            }
+                        } catch (Exception $ft_error) {
+                            error_log('Could not fetch available financial types: ' . $ft_error->getMessage());
+                        }
+                    }
+                }
             }
 
+            // Return the response even if it has errors, so the calling code can handle them
             return $response;
         } catch (Exception $e) {
             // Log any exceptions

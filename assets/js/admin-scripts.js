@@ -366,4 +366,92 @@ jQuery(document).ready(function ($) {
       $("#test-civicrm-connection").trigger("click");
     }, 1000);
   }
+
+  // Handle financial types refresh
+  $("#refresh-financial-types").on("click", function (e) {
+    e.preventDefault();
+
+    const $button = $(this);
+    const $message = $("#financial-types-message");
+
+    // Update button text and disable it
+    $button.text("Loading...").prop("disabled", true);
+    $message.html("").removeClass("notice-success notice-error");
+
+    // Send AJAX request
+    $.ajax({
+      url: ajaxurl,
+      type: "POST",
+      data: {
+        action: "fetch_financial_types",
+        nonce: wc_civicrm_admin_params.fetch_financial_types_nonce,
+      },
+      success: function (response) {
+        if (response.success) {
+          // Update the dropdown with new options
+          const $select = $("#wc_civicrm_contribution_type_id");
+          const currentValue = $select.val();
+
+          $select.empty();
+
+          if (response.data.types && response.data.types.length > 0) {
+            $.each(response.data.types, function (index, type) {
+              const selected = type.id == currentValue ? "selected" : "";
+              $select.append(
+                `<option value="${type.id}" ${selected}>${type.name}</option>`
+              );
+            });
+          } else {
+            $select.append("<option value='1'>Donation</option>");
+          }
+
+          $message
+            .addClass("notice-success")
+            .html("<p>" + response.data.message + "</p>");
+        } else {
+          $message
+            .addClass("notice-error")
+            .html("<p>Error: " + response.data.message + "</p>");
+        }
+      },
+      error: function (xhr, status, error) {
+        $message
+          .addClass("notice-error")
+          .html("<p>Error: Unable to connect to server</p>");
+      },
+      complete: function () {
+        // Restore button text and enable it
+        $button.text("Refresh Types").prop("disabled", false);
+      },
+    });
+  });
+
+  // Handle save contribution settings button
+  $("#save-contribution-settings").on("click", function (e) {
+    e.preventDefault();
+
+    const financialTypeId = $("#wc_civicrm_contribution_type_id").val();
+
+    // Send AJAX request to save settings
+    $.ajax({
+      url: ajaxurl,
+      type: "POST",
+      data: {
+        action: "update_option",
+        option_name: "wc_civicrm_contribution_type_id",
+        option_value: financialTypeId,
+        nonce: wc_civicrm_admin_params.update_option_nonce,
+      },
+      success: function (response) {
+        if (response.success) {
+          alert("Settings saved successfully!");
+        } else {
+          alert("Error saving settings: " + response.data.message);
+        }
+      },
+      error: function () {
+        alert("Error connecting to server");
+      },
+    });
+  });
 });

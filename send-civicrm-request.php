@@ -243,12 +243,12 @@ trait WC_CiviCRM_API_Request
         ]);
 
         // Log request details for debugging
-        error_log('CiviCRM API Request Details:');
-        error_log('Endpoint: ' . $endpoint);
-        error_log('Entity: ' . $entity);
-        error_log('Action: ' . $action);
-        error_log('Params: ' . json_encode($request_data, JSON_PRETTY_PRINT));
-        error_log('Auth Token: ' . substr($this->auth_token, 0, 5) . '...' . substr($this->auth_token, -5));
+        // error_log('CiviCRM API Request Details:');
+        // error_log('Endpoint: ' . $endpoint);
+        // error_log('Entity: ' . $entity);
+        // error_log('Action: ' . $action);
+        // error_log('Params: ' . json_encode($request_data, JSON_PRETTY_PRINT));
+        // error_log('Auth Token: ' . substr($this->auth_token, 0, 5) . '...' . substr($this->auth_token, -5));
 
         // Execute the request
         try {
@@ -265,46 +265,7 @@ trait WC_CiviCRM_API_Request
             error_log('HTTP Status: ' . (isset($http_response_header[0]) ? $http_response_header[0] : 'Unknown'));
             error_log('Raw Response: ' . $response_raw);
             
-            // Log detailed error information if there's a DB error
-            if (isset($response['error_message']) && strpos($response['error_message'], 'DB Error') !== false) {
-                error_log('DB Error detected in CiviCRM API response:');
-                error_log('Error message: ' . $response['error_message']);
-                error_log('Status code: ' . ($response['status'] ?? 'Unknown'));
-                
-                // If it's a constraint violation, provide additional context
-                if (strpos($response['error_message'], 'constraint violation') !== false) {
-                    error_log('Constraint violation detected - this typically means:');
-                    error_log('1. A referenced ID (like financial_type_id) does not exist');
-                    error_log('2. A required field is missing or has an invalid value');
-                    error_log('3. A unique field has a duplicate value');
-                    
-                    // If we're creating a contribution, provide specific guidance
-                    if ($entity === 'Contribution' && $action === 'create') {
-                        error_log('For contributions, check that:');
-                        error_log('- financial_type_id exists in your CiviCRM instance');
-                        error_log('- payment_instrument_id exists in your CiviCRM instance');
-                        error_log('- contribution_status_id exists in your CiviCRM instance');
-                        error_log('- contact_id exists and is valid');
-                        
-                        // Try to get available financial types for debugging
-                        try {
-                            $debug_ft_result = $this->send_civicrm_request('FinancialType', 'get', [
-                                'select' => ['id', 'name'],
-                                'checkPermissions' => false
-                            ]);
-                            
-                            if (isset($debug_ft_result['values']) && is_array($debug_ft_result['values'])) {
-                                error_log('Available financial types in CiviCRM:');
-                                foreach ($debug_ft_result['values'] as $ft) {
-                                    error_log("ID: {$ft['id']} - Name: {$ft['name']}");
-                                }
-                            }
-                        } catch (Exception $ft_error) {
-                            error_log('Could not fetch available financial types: ' . $ft_error->getMessage());
-                        }
-                    }
-                }
-            }
+           
 
             // Return the response even if it has errors, so the calling code can handle them
             return $response;

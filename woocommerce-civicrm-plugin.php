@@ -4,7 +4,7 @@
     Description: Automatically creates CiviCRM orders from WooCommerce orders
     Version: 1.0
     Author: Loic Moncany
-    Author URI: https://example.com
+    Author URI: https://iclick.space
     License: GPLv2 or later
     Text Domain: wc-civicrm
     */
@@ -766,17 +766,35 @@ class WooCommerceCiviCRMIntegration
     public function enqueue_admin_assets($hook)
     {
         if (strpos($hook, 'wc-civicrm') !== false) {
-            wp_enqueue_style(
-                'wc-civicrm-admin',
-                plugins_url('assets/css/admin.css', __FILE__)
-            );
-            wp_enqueue_script(
-                'wc-civicrm-admin',
-                plugins_url('assets/js/admin.js', __FILE__),
-                ['jquery'],
-                '1.0',
-                true
-            );
+            // Check if the file exists before enqueueing
+            $css_path = plugin_dir_path(__FILE__) . 'assets/css/admin.css';
+            $js_path = plugin_dir_path(__FILE__) . 'assets/js/admin.js';
+            
+            // Only enqueue if files exist or use fallback
+            if (file_exists($css_path)) {
+                wp_enqueue_style(
+                    'wc-civicrm-admin',
+                    plugins_url('assets/css/admin.css', __FILE__),
+                    [],
+                    '1.0'
+                );
+            } else {
+                // Log the missing file
+                $this->log_debug("Admin CSS file not found at: $css_path");
+            }
+            
+            if (file_exists($js_path)) {
+                wp_enqueue_script(
+                    'wc-civicrm-admin',
+                    plugins_url('assets/js/admin.js', __FILE__),
+                    ['jquery'],
+                    '1.0',
+                    true
+                );
+            } else {
+                // Log the missing file
+                $this->log_debug("Admin JS file not found at: $js_path");
+            }
         }
     }
 

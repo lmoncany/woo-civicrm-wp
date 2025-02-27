@@ -124,7 +124,7 @@ class WC_CiviCRM_Settings
         $plugin_url = plugin_dir_url(__FILE__);
         
         // Check if we're inside a subdirectory
-        if (strpos($plugin_url, '/wp/wp-content/plugins/woo-civicrm-wp/') === false) {
+        if (strpos($plugin_url, '/wp-content/plugins/woo-civicrm-wp/') === false) {
             $plugin_url = plugin_dir_url(dirname(__FILE__));
         }
 
